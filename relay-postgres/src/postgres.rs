@@ -399,6 +399,34 @@ impl PgStore {
         debug!("got job");
         Ok(job)
     }
+
+    /// Checks and returns if a Job exists in the database with the provided queue and id.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
+    #[tracing::instrument(name = "pg_exists", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
+    async fn exists(&self, queue: &str, job_id: &str) -> Result<bool> {
+        let client = self.pool.get().await?;
+
+        let stmt = client
+            .prepare_cached(
+                r#"
+                    SELECT EXISTS (
+                        SELECT 1 FROM jobs WHERE
+                            queue=$1 AND
+                            id=$2
+                    )
+                "#,
+            )
+            .await?;
+
+        let exists: bool = client.query_one(&stmt, &[&queue, &job_id]).await?.get(0);
+
+        increment_counter!("exists", "queue" => queue.to_owned());
+        debug!("exists check job");
+        Ok(exists)
+    }
 }
 
 impl From<&Row> for Job {
@@ -585,6 +613,7 @@ mod tests {
             run_at: None,
         };
         store.enqueue(EnqueueMode::Unique, &[job1]).await?;
+        assert!(store.exists(&queue, &job_id).await?);
 
         let result = store.get(&queue, &job_id).await?;
         assert!(result.is_some());
