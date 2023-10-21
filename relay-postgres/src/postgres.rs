@@ -5,10 +5,10 @@ use deadpool_postgres::{
     ClientWrapper, GenericClient, Hook, HookError, Manager, ManagerConfig, Pool, PoolError,
     RecyclingMethod,
 };
-use metrics::{counter, increment_counter};
+use metrics::{counter, histogram, increment_counter};
 use pg_interval::Interval;
 use relay_core::job::EnqueueMode;
-use relay_core::num::PositiveI32;
+use relay_core::num::{GtZeroI64, PositiveI32};
 use rustls::client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier};
 use rustls::{Certificate, OwnedTrustAnchor, RootCertStore, ServerName};
 use serde::{Deserialize, Serialize};
@@ -369,7 +369,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     async fn get(&self, queue: &str, job_id: &str) -> Result<Option<Job>> {
-        let mut client = self.pool.get().await?;
+        let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
                 r#"
@@ -427,6 +427,99 @@ impl PgStore {
         debug!("exists check job");
         Ok(exists)
     }
+
+    /// Fetches the next available Job(s) to be executed order by `run_at`.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
+    #[tracing::instrument(name = "pg_next", level = "debug", skip_all, fields(num_jobs=num_jobs.get(), queue=%queue))]
+    async fn next(&self, queue: &str, num_jobs: GtZeroI64) -> Result<Option<Vec<Job>>> {
+        let client = self.pool.get().await?;
+
+        // MUST USE CTE WITH `FOR UPDATE SKIP LOCKED LIMIT` otherwise the Postgres Query Planner
+        // CAN optimize the query which will cause MORE updates than the LIMIT specifies within
+        // a nested loop.
+        // See here for details:
+        // https://github.com/feikesteenbergen/demos/blob/19522f66ffb6eb358fe2d532d9bdeae38d4e2a0b/bugs/update_from_correlated.adoc
+        let stmt = client
+            .prepare_cached(
+                r#"
+               WITH subquery AS (
+                   SELECT
+                        id,
+                        queue
+                   FROM jobs
+                   WHERE
+                        queue=$1 AND
+                        in_flight=false AND
+                        run_at <= NOW()
+                   ORDER BY run_at ASC
+                   FOR UPDATE SKIP LOCKED
+                   LIMIT $2
+               )
+               UPDATE jobs j
+               SET in_flight=true,
+                   run_id=uuid_generate_v4(),
+                   updated_at=NOW(),
+                   expires_at=NOW()+timeout
+               FROM subquery
+               WHERE
+                   j.queue=subquery.queue AND
+                   j.id=subquery.id
+               RETURNING j.id,
+                         j.queue,
+                         j.timeout,
+                         j.max_retries,
+                         j.retries_remaining,
+                         j.data,
+                         j.state,
+                         j.run_id,
+                         j.run_at,
+                         j.updated_at,
+                         j.created_at
+            "#,
+            )
+            .await?;
+
+        let limit = num_jobs.get();
+        let params: Vec<&(dyn ToSql + Sync)> = vec![&queue, &limit];
+        let stream = client.query_raw(&stmt, params).await?;
+        tokio::pin!(stream);
+
+        // on purpose NOT using num_jobs as the capacity to avoid the potential attack vector of
+        // someone exhausting all memory by sending a large number even if there aren't that many
+        // records in the database.
+        let mut jobs: Vec<Job> = if let Some(size) = stream.size_hint().1 {
+            Vec::with_capacity(size)
+        } else {
+            Vec::new()
+        };
+
+        while let Some(row) = stream.next().await {
+            jobs.push((&row?).into());
+        }
+
+        if jobs.is_empty() {
+            debug!("fetched no jobs");
+            Ok(None)
+        } else {
+            for job in &jobs {
+                // using updated_at because this handles:
+                // - enqueue -> processing
+                // - reschedule -> processing
+                // - reaped -> processing
+                // This is a possible indicator not enough consumers/processors on the calling side
+                // and jobs are backed up for processing.
+                if let Ok(d) = (Utc::now() - job.updated_at).to_std() {
+                    histogram!("latency", d, "queue" => job.queue.clone(), "type" => "to_processing");
+                }
+            }
+            counter!("fetched", jobs.len() as u64, "queue" => queue.to_owned());
+            debug!(fetched_jobs = jobs.len(), "fetched next job(s)");
+            Ok(Some(jobs))
+        }
+    }
 }
 
 impl From<&Row> for Job {
@@ -465,7 +558,7 @@ impl From<&Row> for Job {
     }
 }
 
-fn interval_seconds(interval: Interval) -> i32 {
+const fn interval_seconds(interval: Interval) -> i32 {
     let month_secs = interval.months * 30 * 24 * 60 * 60;
     let day_secs = interval.days * 24 * 60 * 60;
     let micro_secs = (interval.microseconds / 1_000_000) as i32;
@@ -628,7 +721,26 @@ mod tests {
         assert!(result.run_id.is_none());
 
         let result = store.enqueue(EnqueueMode::Unique, &[job2]).await;
-        assert_eq!(Err(Error::JobExists { job_id, queue }), result);
+        assert_eq!(
+            Err(Error::JobExists {
+                job_id: job_id.clone(),
+                queue: queue.clone()
+            }),
+            result
+        );
+
+        let result = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
+        assert!(result.is_some());
+        assert_eq!(1, *&result.as_ref().unwrap().len());
+        let result = &result.as_ref().unwrap()[0];
+        assert_eq!(job_id, result.id);
+        assert_eq!(queue, result.queue);
+        assert_eq!(PositiveI32::new(30).unwrap(), result.timeout);
+        assert_eq!(Some(PositiveI32::new(3).unwrap()), result.max_retries);
+        assert_eq!(Some(PositiveI32::new(3).unwrap()), result.retries_remaining);
+        assert_eq!(payload.to_string(), result.payload.to_string());
+        assert!(result.state.is_none());
+        assert!(result.run_id.is_some());
         Ok(())
     }
 }
