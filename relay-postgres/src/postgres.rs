@@ -1,6 +1,5 @@
 use crate::errors::{Error, Result};
 use crate::migrations::{run_migrations, Migration};
-use crate::num::PositiveI32;
 use chrono::{DateTime, TimeZone, Utc};
 use deadpool_postgres::{
     ClientWrapper, GenericClient, Hook, HookError, Manager, ManagerConfig, Pool, PoolError,
@@ -8,6 +7,8 @@ use deadpool_postgres::{
 };
 use metrics::{counter, increment_counter};
 use pg_interval::Interval;
+use relay_core::job::EnqueueMode;
+use relay_core::num::PositiveI32;
 use rustls::client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier};
 use rustls::{Certificate, OwnedTrustAnchor, RootCertStore, ServerName};
 use serde::{Deserialize, Serialize};
@@ -30,16 +31,6 @@ const MIGRATIONS: [Migration; 1] = [Migration::new(
     "1697429987001_initialize.sql",
     include_str!("../migrations/1697429987001_initialize.sql"),
 )];
-
-/// This is a custom enqueue mode that determines the behaviour of the enqueue function.
-pub enum EnqueueMode {
-    /// This ensures the Job is unique by Job ID and will return an error id any Job already exists.
-    Unique,
-    /// This will silently do nothing if the Job that already exists.
-    Ignore,
-    /// This will replace the existing Job with the new Job changing the job to be immediately no longer in-flight.
-    Replace,
-}
 
 // Is a structure used to enqueue a new Job.
 #[derive(Deserialize)]
@@ -211,7 +202,7 @@ impl PgStore {
                     client
                         .simple_query("SET default_transaction_isolation TO 'read committed'")
                         .await
-                        .map_err(|e| HookError::Backend(e))?;
+                        .map_err(HookError::Backend)?;
                     Ok(())
                 })
             }))
@@ -234,18 +225,15 @@ impl PgStore {
         Ok(Self { pool })
     }
 
-    /// Creates a batch of Jobs to be processed in a single write transaction.
-    ///
-    /// NOTES: If the number of jobs passed is '1' then those will return a `JobExists` error
-    ///        identifying the job as already existing.
-    ///        If there are more than one jobs this function will not return an error for conflicts
-    ///        in Job ID, but rather silently drop the record using an `ON CONFLICT DO NOTHING`.
-    ///        If you need to have a Conflict error returned pass a single Job instead.
+    // TODO: Update doc comments for existing before continuing.
+
+    /// Creates a batch of Jobs to be processed in a single write transaction following the rules
+    /// indicated by provided `EnqueueMode`.
     ///
     /// # Errors
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
-    #[tracing::instrument(name = "pg_enqueue", level = "debug", skip_all, fields(jobs = jobs.len()))]
+    #[tracing::instrument(name = "pg_enqueue", level = "debug", skip_all, fields(mode, jobs = jobs.len()))]
     async fn enqueue<'a>(&self, mode: EnqueueMode, jobs: &[NewJob<'a>]) -> Result<()> {
         let mut client = self.pool.get().await?;
         let transaction = client.transaction().await?;
@@ -374,77 +362,80 @@ impl PgStore {
         Ok(())
     }
 
-    // async fn get(&self, queue: &str, job_id: &str) -> Result<Option<Job>> {
-    //     let mut client = self.pool.get().await?;
-    //     let stmt = client
-    //         .prepare_cached(
-    //             r#"
-    //            SELECT id,
-    //                   queue,
-    //                   timeout,
-    //                   max_retries,
-    //                   retries_remaining,
-    //                   data,
-    //                   state,
-    //                   run_id,
-    //                   run_at,
-    //                   updated_at,
-    //                   created_at
-    //            FROM jobs
-    //            WHERE
-    //                 queue=$1 AND
-    //                 id=$2
-    //         "#,
-    //         )
-    //         .await?;
-    //     let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
-    //
-    //     let job = row.as_ref().map(row_to_job);
-    //
-    //     increment_counter!("get", "queue" => queue.to_owned());
-    //     debug!("got job");
-    //     Ok(job)
-    // }
+    /// Returns, if available, the Job and associated metadata from the database using the provided
+    /// queue and id.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
+    async fn get(&self, queue: &str, job_id: &str) -> Result<Option<Job>> {
+        let mut client = self.pool.get().await?;
+        let stmt = client
+            .prepare_cached(
+                r#"
+               SELECT id,
+                      queue,
+                      timeout,
+                      max_retries,
+                      retries_remaining,
+                      data,
+                      state,
+                      run_id,
+                      run_at,
+                      updated_at,
+                      created_at
+               FROM jobs
+               WHERE
+                    queue=$1 AND
+                    id=$2
+            "#,
+            )
+            .await?;
+
+        let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
+        let job = row.as_ref().map(|r| r.into());
+
+        increment_counter!("get", "queue" => queue.to_owned());
+        debug!("got job");
+        Ok(job)
+    }
 }
 
-// impl From<&Row> for Job {
-//     fn from(row: &Row) -> Self {
-//         Job {
-//             id: row.get(0),
-//             queue: row.get(1),
-//             timeout: unsafe {
-//                 NonZeroU32::new_unchecked(interval_seconds(row.get::<usize, Interval>(2)) as u32)
-//             },
-//             max_retries: row
-//                 .get::<usize, Option<i32>>(3)
-//                 .map(|r| Some(unsafe { NonZeroU32::new_unchecked(r as u32) })),
-//             retries_remaining: 0,
-//             payload: Box::new(()),
-//             state: None,
-//             run_id: None,
-//             run_at: Default::default(),
-//             updated_at: Default::default(),
-//             created_at: Default::default(),
-//         }
-//     }
-// }
-
-// #[inline]
-// fn row_to_job(row: &Row) -> NewJob {
-//     NewJob {
-//         id: row.get(0),
-//         queue: row.get(1),
-//         timeout: interval_seconds(row.get::<usize, Interval>(2)),
-//         max_retries: row.get(3),
-//         payload: row.get::<usize, Json<&RawValue>>(4).0,
-//         state: row
-//             .get::<usize, Option<Json<&RawValue>>>(5)
-//             .map(|state| match state {
-//                 Json(state) => state,
-//             }),
-//         run_at: Some(Utc.from_utc_datetime(&row.get(6))),
-//     }
-// }
+impl From<&Row> for Job {
+    fn from(row: &Row) -> Self {
+        Job {
+            id: row.get(0),
+            queue: row.get(1),
+            timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2)))
+                .unwrap_or_else(|| {
+                    warn!("invalid timeout value, defaulting to 30s");
+                    PositiveI32::new(30).unwrap()
+                }),
+            max_retries: row.get::<usize, Option<i32>>(3).map(|i| {
+                PositiveI32::new(i).unwrap_or_else(|| {
+                    warn!("invalid max_retries value, defaulting to 0");
+                    PositiveI32::new(0).unwrap()
+                })
+            }),
+            retries_remaining: row.get::<usize, Option<i32>>(4).map(|i| {
+                PositiveI32::new(i).unwrap_or_else(|| {
+                    warn!("invalid max_retries value, defaulting to 0");
+                    PositiveI32::new(0).unwrap()
+                })
+            }),
+            payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
+            state: row
+                .get::<usize, Option<Json<Box<RawValue>>>>(6)
+                .map(|state| match state {
+                    Json(state) => state,
+                }),
+            run_id: row.get(7),
+            run_at: Utc.from_utc_datetime(&row.get(8)),
+            updated_at: Utc.from_utc_datetime(&row.get(9)),
+            created_at: Utc.from_utc_datetime(&row.get(10)),
+        }
+    }
+}
 
 fn interval_seconds(interval: Interval) -> i32 {
     let month_secs = interval.months * 30 * 24 * 60 * 60;
