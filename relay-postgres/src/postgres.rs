@@ -565,12 +565,13 @@ mod tests {
         let store = PgStore::default(&db_url).await?;
         let job_id = Uuid::new_v4().to_string();
         let queue = Uuid::new_v4().to_string();
+        let payload = &RawValue::from_string("{}".to_string())?;
         let job1 = NewJob {
             id: &job_id,
             queue: &queue,
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI32::new(3).unwrap()),
-            payload: &RawValue::from_string("{}".to_string())?,
+            payload,
             state: None,
             run_at: None,
         };
@@ -579,11 +580,23 @@ mod tests {
             queue: &queue,
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI32::new(3).unwrap()),
-            payload: &RawValue::from_string("{}".to_string())?,
+            payload,
             state: None,
             run_at: None,
         };
         store.enqueue(EnqueueMode::Unique, &[job1]).await?;
+
+        let result = store.get(&queue, &job_id).await?;
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(job_id, result.id);
+        assert_eq!(queue, result.queue);
+        assert_eq!(PositiveI32::new(30).unwrap(), result.timeout);
+        assert_eq!(Some(PositiveI32::new(3).unwrap()), result.max_retries);
+        assert_eq!(Some(PositiveI32::new(3).unwrap()), result.retries_remaining);
+        assert_eq!(payload.to_string(), result.payload.to_string());
+        assert!(result.state.is_none());
+        assert!(result.run_id.is_none());
 
         let result = store.enqueue(EnqueueMode::Unique, &[job2]).await;
         assert_eq!(Err(Error::JobExists { job_id, queue }), result);
