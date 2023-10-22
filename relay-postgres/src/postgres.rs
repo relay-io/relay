@@ -64,6 +64,41 @@ pub struct NewJob<'a> {
     pub run_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Deserialize)]
+pub struct RescheduleJob<'a> {
+    /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
+    pub id: &'a str,
+
+    /// Is used to differentiate different job types that can be picked up by job runners.
+    pub queue: &'a str,
+
+    /// Denotes the duration, in seconds, after a Job has started processing or since the last
+    /// heartbeat request occurred before considering the Job failed and being put back into the
+    /// queue.
+    pub timeout: PositiveI32,
+
+    /// Determines how many times the Job can be retried, due to timeouts, before being considered
+    /// permanently failed. Infinite retries are supported by using a negative number eg. -1
+    pub max_retries: Option<PositiveI32>,
+
+    /// The raw JSON payload that the job runner will receive.
+    #[serde(borrow)]
+    pub payload: &'a RawValue,
+
+    /// The raw JSON payload that the job runner will receive.
+    #[serde(borrow)]
+    pub state: Option<&'a RawValue>,
+
+    /// Is the current Jobs unique `run_id`. When there is a value here it signifies that the job is
+    /// currently in-flight being processed.
+    pub run_id: Uuid,
+
+    /// With this you can optionally schedule/set a Job to be run only at a specific time in the
+    /// future. This option should mainly be used for one-time jobs and scheduled jobs that have
+    /// the option of being self-perpetuated in combination with the reschedule endpoint.
+    pub run_at: Option<DateTime<Utc>>,
+}
+
 /// Job defines all information about a Job.
 #[derive(Serialize)]
 pub struct Job {
@@ -594,6 +629,84 @@ impl PgStore {
         }
         Ok(())
     }
+
+    /// Reschedules the an existing in-flight Job to be run again with the provided new information.
+    ///
+    /// The Jobs queue, id and run_id must match an existing in-flight Job. This is primarily used
+    /// to schedule a new/the next run of a singleton `Job`. This provides the ability for
+    /// self-perpetuating scheduled jobs in an atomic manner.
+    ///
+    /// If the `Job` no longer exists or is not in-flight, this will return without error.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
+    #[tracing::instrument(name = "pg_reschedule", level = "debug", skip_all, fields(job_id=%job.id, queue=%job.queue))]
+    async fn reschedule<'a>(&self, job: &RescheduleJob<'a>) -> Result<()> {
+        let now = Utc::now().naive_utc();
+        let run_at = if let Some(run_at) = job.run_at {
+            run_at.naive_utc()
+        } else {
+            now
+        };
+
+        let client = self.pool.get().await?;
+
+        let stmt = client
+            .prepare_cached(
+                r#"
+                UPDATE jobs
+                SET
+                    timeout = $3,
+                    max_retries = $4,
+                    retries_remaining = $4,
+                    data = $5,
+                    state = $6,
+                    updated_at = $7,
+                    run_at = $8,
+                    in_flight = false,
+                    run_id = NULL
+                WHERE
+                    queue=$1 AND
+                    id=$2 AND
+                    in_flight=true AND
+                    run_id=$9
+                RETURNING (SELECT run_at FROM jobs WHERE queue=$1 AND id=$2 AND in_flight=true)
+                "#,
+            )
+            .await?;
+
+        let row = client
+            .query_opt(
+                &stmt,
+                &[
+                    &job.queue,
+                    &job.id,
+                    &Interval::from_duration(chrono::Duration::seconds(i64::from(
+                        job.timeout.get(),
+                    ))),
+                    &job.max_retries.as_ref().map(|r| Some(r.get())),
+                    &Json(&job.payload),
+                    &job.state.map(|state| Some(Json(state))),
+                    &now,
+                    &run_at,
+                    &job.run_id,
+                ],
+            )
+            .await?;
+
+        if let Some(row) = row {
+            let run_at = Utc.from_utc_datetime(&row.get(0));
+
+            increment_counter!("rescheduled", "queue" => job.queue.to_string());
+
+            if let Ok(d) = (Utc::now() - run_at).to_std() {
+                histogram!("duration", d, "queue" => job.queue.to_string(), "type" => "rescheduled");
+            }
+            debug!("rescheduled job");
+        }
+        Ok(())
+    }
 }
 
 impl From<&Row> for Job {
@@ -752,7 +865,76 @@ impl ServerCertVerifier for NoHostnameTlsVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::DurationRound;
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn test_reschedule() -> anyhow::Result<()> {
+        let db_url = std::env::var("DATABASE_URL")?;
+        let store = PgStore::default(&db_url).await?;
+        let job_id = Uuid::new_v4().to_string();
+        let queue = Uuid::new_v4().to_string();
+        let payload = &RawValue::from_string("{}".to_string())?;
+        let payload2 = &RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
+        let job = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: Some(PositiveI32::new(3).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+
+        store.enqueue(EnqueueMode::Unique, &[job]).await?;
+        assert!(store.exists(&queue, &job_id).await?);
+
+        let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
+        assert!(next.is_some());
+        assert_eq!(1, *&next.as_ref().unwrap().len());
+        let next = &next.unwrap()[0];
+
+        let now = Utc::now().duration_trunc(chrono::Duration::milliseconds(100))?;
+        let mut reschedule = RescheduleJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(31).unwrap(),
+            max_retries: Some(PositiveI32::new(4).unwrap()),
+            payload: payload2,
+            state: None,
+            run_at: Some(now.clone()),
+            run_id: next.run_id.unwrap(),
+        };
+        store.reschedule(&reschedule).await?;
+
+        let result = store.get(&queue, &job_id).await?;
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(job_id, result.id);
+        assert_eq!(queue, result.queue);
+        assert_eq!(PositiveI32::new(31).unwrap(), result.timeout);
+        assert_eq!(Some(PositiveI32::new(4).unwrap()), result.max_retries);
+        assert_eq!(Some(PositiveI32::new(4).unwrap()), result.retries_remaining);
+        assert_eq!(payload2.to_string(), result.payload.to_string());
+        assert!(result.state.is_none());
+        assert!(result.run_id.is_none());
+        assert_eq!(now, result.run_at);
+
+        // tests that can't reschedule a job no longer in flight anymore
+        reschedule.payload = payload;
+        store.reschedule(&reschedule).await?;
+        let result = store.get(&queue, &job_id).await?;
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(payload2.to_string(), result.payload.to_string());
+
+        store.delete(&queue, &job_id).await?;
+        assert!(!store.exists(&queue, &job_id).await?);
+
+        // ensures no error rescheduling when no Job exists
+        store.reschedule(&reschedule).await?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_enqueue_do_nothing() -> anyhow::Result<()> {
