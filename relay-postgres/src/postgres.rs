@@ -293,16 +293,16 @@ impl PgStore {
                           created_at
                         )
                         VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $8)
-                        ON CONFLICT UPDATE SET
-                        timeout = EXCLUDED.timeout,
-                        max_retries = EXCLUDED.max_retries,
-                        retries_remaining = EXCLUDED.max_retries,
-                        data = EXCLUDED.data,
-                        state = EXCLUDED.state,
-                        in_flight = false,
-                        run_id = NULL,
-                        run_at = EXCLUDED.run_at,
-                        updated_at = EXCLUDED.updated_at"#,
+                        ON CONFLICT (queue, id) DO UPDATE SET
+                            timeout = EXCLUDED.timeout,
+                            max_retries = EXCLUDED.max_retries,
+                            retries_remaining = EXCLUDED.max_retries,
+                            data = EXCLUDED.data,
+                            state = EXCLUDED.state,
+                            in_flight = false,
+                            run_id = NULL,
+                            run_at = EXCLUDED.run_at,
+                            updated_at = EXCLUDED.updated_at"#,
                     )
                     .await?
             }
@@ -755,7 +755,149 @@ mod tests {
     use uuid::Uuid;
 
     #[tokio::test]
-    async fn test_enqueue_conflict() -> anyhow::Result<()> {
+    async fn test_enqueue_do_nothing() -> anyhow::Result<()> {
+        let db_url = std::env::var("DATABASE_URL")?;
+        let store = PgStore::default(&db_url).await?;
+        let job_id = Uuid::new_v4().to_string();
+        let queue = Uuid::new_v4().to_string();
+        let payload = &RawValue::from_string("{}".to_string())?;
+        let payload2 = &RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
+        let job1 = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: Some(PositiveI32::new(3).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+        let job2 = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(31).unwrap(),
+            max_retries: Some(PositiveI32::new(4).unwrap()),
+            payload: payload2,
+            state: None,
+            run_at: None,
+        };
+        store.enqueue(EnqueueMode::Ignore, &[job1]).await?;
+        assert!(store.exists(&queue, &job_id).await?);
+
+        let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
+        assert!(next.is_some());
+        assert_eq!(1, *&next.as_ref().unwrap().len());
+        let next = &next.unwrap()[0];
+
+        store.enqueue(EnqueueMode::Ignore, &[job2]).await?;
+        assert!(store.exists(&queue, &job_id).await?);
+
+        let j = store.get(&queue, &job_id).await?;
+        assert!(j.is_some());
+        let j = j.unwrap();
+        assert_eq!(job_id, j.id);
+        assert_eq!(queue, j.queue);
+        assert_eq!(PositiveI32::new(30).unwrap(), j.timeout);
+        assert_eq!(Some(PositiveI32::new(3).unwrap()), j.max_retries);
+        assert_eq!(Some(PositiveI32::new(3).unwrap()), j.retries_remaining);
+        assert_eq!(payload.to_string(), j.payload.to_string());
+        assert!(j.state.is_none());
+        assert!(j.run_id.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_replace() -> anyhow::Result<()> {
+        let db_url = std::env::var("DATABASE_URL")?;
+        let store = PgStore::default(&db_url).await?;
+        let job_id = Uuid::new_v4().to_string();
+        let queue = Uuid::new_v4().to_string();
+        let payload = &RawValue::from_string("{}".to_string())?;
+        let payload2 = &RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
+        let job1 = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: Some(PositiveI32::new(3).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+        let job2 = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(31).unwrap(),
+            max_retries: Some(PositiveI32::new(4).unwrap()),
+            payload: payload2,
+            state: None,
+            run_at: None,
+        };
+        store.enqueue(EnqueueMode::Replace, &[job1]).await?;
+        assert!(store.exists(&queue, &job_id).await?);
+
+        let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
+        assert!(next.is_some());
+        assert_eq!(1, *&next.as_ref().unwrap().len());
+        let next = &next.unwrap()[0];
+
+        store.enqueue(EnqueueMode::Replace, &[job2]).await?;
+        assert!(store.exists(&queue, &job_id).await?);
+
+        let j = store.get(&queue, &job_id).await?;
+        assert!(j.is_some());
+        let j = j.unwrap();
+        assert_eq!(job_id, j.id);
+        assert_eq!(queue, j.queue);
+        assert_eq!(PositiveI32::new(31).unwrap(), j.timeout);
+        assert_eq!(Some(PositiveI32::new(4).unwrap()), j.max_retries);
+        assert_eq!(Some(PositiveI32::new(4).unwrap()), j.retries_remaining);
+        assert_eq!(payload2.to_string(), j.payload.to_string());
+        assert!(j.state.is_none());
+        assert!(j.run_id.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_already_exist() -> anyhow::Result<()> {
+        let db_url = std::env::var("DATABASE_URL")?;
+        let store = PgStore::default(&db_url).await?;
+        let job_id = Uuid::new_v4().to_string();
+        let queue = Uuid::new_v4().to_string();
+        let payload = &RawValue::from_string("{}".to_string())?;
+        let job1 = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: Some(PositiveI32::new(3).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+        let job2 = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(31).unwrap(),
+            max_retries: Some(PositiveI32::new(4).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+        store.enqueue(EnqueueMode::Unique, &[job1]).await?;
+        assert!(store.exists(&queue, &job_id).await?);
+
+        let result = store.enqueue(EnqueueMode::Unique, &[job2]).await;
+        assert_eq!(
+            Err(Error::JobExists {
+                job_id: job_id.clone(),
+                queue: queue.clone()
+            }),
+            result
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle() -> anyhow::Result<()> {
         let db_url = std::env::var("DATABASE_URL")?;
         let store = PgStore::default(&db_url).await?;
         let job_id = Uuid::new_v4().to_string();
@@ -815,6 +957,12 @@ mod tests {
         assert_eq!(payload.to_string(), result.payload.to_string());
         assert!(result.state.is_none());
         assert!(result.run_id.is_some());
+
+        let result = store
+            .complete(&result.queue, &result.id, &result.run_id.unwrap())
+            .await;
+        assert!(result.is_ok());
+        assert!(!store.exists(&queue, &job_id).await?);
         Ok(())
     }
 
