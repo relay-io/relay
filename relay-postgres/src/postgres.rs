@@ -408,7 +408,6 @@ impl PgStore {
     #[tracing::instrument(name = "pg_exists", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
     async fn exists(&self, queue: &str, job_id: &str) -> Result<bool> {
         let client = self.pool.get().await?;
-
         let stmt = client
             .prepare_cached(
                 r#"
@@ -519,6 +518,81 @@ impl PgStore {
             debug!(fetched_jobs = jobs.len(), "fetched next job(s)");
             Ok(Some(jobs))
         }
+    }
+
+    /// Deletes the job from the database given the `queue` and `id`.
+    ///
+    /// If the `Job` already does not exist, this will complete without error.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
+    #[tracing::instrument(name = "pg_delete", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
+    async fn delete(&self, queue: &str, job_id: &str) -> Result<()> {
+        let client = self.pool.get().await?;
+        let stmt = client
+            .prepare_cached(
+                r#"
+                DELETE FROM jobs
+                WHERE
+                    queue=$1 AND
+                    id=$2
+                RETURNING run_at
+            "#,
+            )
+            .await?;
+        let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
+
+        if let Some(row) = row {
+            let run_at = Utc.from_utc_datetime(&row.get(0));
+
+            increment_counter!("deleted", "queue" => queue.to_owned());
+
+            if let Ok(d) = (Utc::now() - run_at).to_std() {
+                histogram!("duration", d, "queue" => queue.to_owned(), "type" => "deleted");
+            }
+            debug!("deleted job");
+        }
+        Ok(())
+    }
+
+    /// Completes a `Job` by deleting it from the database given the `queue` and `id` and current
+    /// `run_id`. This different from deletion in that it is used to indicate a `Job` has been
+    /// completed and not just removed.
+    ///
+    /// If the `Job` already does not exist, this will complete without error.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
+    #[tracing::instrument(name = "pg_complete", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
+    async fn complete(&self, queue: &str, job_id: &str, run_id: &Uuid) -> Result<()> {
+        let client = self.pool.get().await?;
+        let stmt = client
+            .prepare_cached(
+                r#"
+                DELETE FROM jobs
+                WHERE
+                    queue=$1 AND
+                    id=$2 AND
+                    run_id=$3
+                RETURNING run_at
+            "#,
+            )
+            .await?;
+        let row = client.query_opt(&stmt, &[&queue, &job_id, &run_id]).await?;
+
+        if let Some(row) = row {
+            let run_at = Utc.from_utc_datetime(&row.get(0));
+
+            increment_counter!("completed", "queue" => queue.to_owned());
+
+            if let Ok(d) = (Utc::now() - run_at).to_std() {
+                histogram!("duration", d, "queue" => queue.to_owned(), "type" => "completed");
+            }
+            debug!("completed job");
+        }
+        Ok(())
     }
 }
 
@@ -741,6 +815,81 @@ mod tests {
         assert_eq!(payload.to_string(), result.payload.to_string());
         assert!(result.state.is_none());
         assert!(result.run_id.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete() -> anyhow::Result<()> {
+        let db_url = std::env::var("DATABASE_URL")?;
+        let store = PgStore::default(&db_url).await?;
+        let job_id = Uuid::new_v4().to_string();
+        let queue = Uuid::new_v4().to_string();
+        let payload = &RawValue::from_string("{}".to_string())?;
+        let job = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: Some(PositiveI32::new(3).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+        store.enqueue(EnqueueMode::Unique, &[job]).await?;
+        assert!(store.exists(&queue, &job_id).await?);
+
+        let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
+        assert!(next.is_some());
+        let jobs = next.unwrap();
+        let next = jobs.get(0).unwrap();
+
+        let result = store.delete(&next.queue, &next.id).await;
+        assert!(result.is_ok());
+        assert!(!store.exists(&next.queue, &next.id).await?);
+
+        let result = store.delete(&next.queue, &next.id).await;
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_complete() -> anyhow::Result<()> {
+        let db_url = std::env::var("DATABASE_URL")?;
+        let store = PgStore::default(&db_url).await?;
+        let job_id = Uuid::new_v4().to_string();
+        let queue = Uuid::new_v4().to_string();
+        let payload = &RawValue::from_string("{}".to_string())?;
+        let job = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: Some(PositiveI32::new(3).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+        store.enqueue(EnqueueMode::Unique, &[job]).await?;
+
+        let existing = store.get(&queue, &job_id).await?;
+        assert!(existing.is_some());
+        let existing = existing.unwrap();
+        assert!(existing.run_id.is_none());
+
+        let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
+        assert!(next.is_some());
+        let jobs = next.unwrap();
+        let next = jobs.get(0).unwrap();
+
+        let result = store
+            .complete(&queue, &next.id, &next.run_id.unwrap())
+            .await;
+        assert!(result.is_ok());
+        assert!(!store.exists(&next.queue, &next.id).await?);
+
+        // doesn't exist anymore, should return ok still
+        let result = store
+            .complete(&next.queue, &next.id, &next.run_id.unwrap())
+            .await;
+        assert!(result.is_ok());
         Ok(())
     }
 }
