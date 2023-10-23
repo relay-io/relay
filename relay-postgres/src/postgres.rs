@@ -673,66 +673,69 @@ impl PgStore {
         Ok(())
     }
 
-    // /// Updates the existing in-flight job by incrementing it's `updated_at` and optionally
-    // /// setting state at the same time.
-    // ///
-    // /// # Errors
-    // ///
-    // /// Will return `Err` if there is any communication issues with the backend Postgres DB or the
-    // /// Job attempting to be updated cannot be found.
-    // #[tracing::instrument(name = "pg_heartbeat", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
-    // async fn heartbeat(&self, queue: &str, job_id: &str, state: Option<Vec<u8>>) -> Result<()> {
-    //     let client = self.pool.get().await?;
-    //
-    //     let stmt = client
-    //         .prepare_cached(
-    //             r#"
-    //            UPDATE jobs
-    //            SET state=$3,
-    //                updated_at=NOW(),
-    //                expires_at=NOW()+timeout
-    //            WHERE
-    //                queue=$1 AND
-    //                id=$2 AND
-    //                in_flight=true
-    //            RETURNING (SELECT run_at FROM jobs WHERE queue=$1 AND id=$2 AND in_flight=true)
-    //         "#,
-    //         )
-    //         .await
-    //         .map_err(|e| Error::Backend {
-    //             message: e.to_string(),
-    //             is_retryable: is_retryable(e),
-    //         })?;
-    //
-    //     let row = client
-    //         .query_opt(
-    //             &stmt,
-    //             &[&queue, &job_id, &state.map(|state| Some(Json(state)))],
-    //         )
-    //         .await
-    //         .map_err(|e| Error::Backend {
-    //             message: e.to_string(),
-    //             is_retryable: is_retryable(e),
-    //         })?;
-    //
-    //     if let Some(row) = row {
-    //         let run_at = Utc.from_utc_datetime(&row.get(0));
-    //
-    //         increment_counter!("heartbeat", "queue" => queue.to_owned());
-    //
-    //         if let Ok(d) = (Utc::now() - run_at).to_std() {
-    //             histogram!("duration", d, "queue" => queue.to_owned(), "type" => "running");
-    //         }
-    //         debug!("heartbeat job");
-    //         Ok(())
-    //     } else {
-    //         debug!("job not found");
-    //         Err(Error::JobNotFound {
-    //             job_id: job_id.to_string(),
-    //             queue: queue.to_string(),
-    //         })
-    //     }
-    // }
+    /// Updates the existing in-flight job by incrementing it's `updated_at` and optionally
+    /// setting state at the same time.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB or the
+    /// Job attempting to be updated cannot be found.
+    #[tracing::instrument(name = "pg_heartbeat", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
+    async fn heartbeat<'a>(
+        &self,
+        queue: &str,
+        job_id: &str,
+        run_id: &Uuid,
+        state: Option<&'a RawValue>,
+    ) -> Result<()> {
+        let client = self.pool.get().await?;
+        let stmt = client
+            .prepare_cached(
+                r#"
+               UPDATE jobs
+               SET state=$4,
+                   updated_at=NOW(),
+                   expires_at=NOW()+timeout
+               WHERE
+                   queue=$1 AND
+                   id=$2 AND
+                   in_flight=true AND
+                   run_id=$3
+               RETURNING run_at
+            "#,
+            )
+            .await?;
+
+        let run_at = client
+            .query_opt(
+                &stmt,
+                &[
+                    &queue,
+                    &job_id,
+                    &run_id,
+                    &state.map(|state| Some(Json(state))),
+                ],
+            )
+            .await?
+            .map(|row| Utc.from_utc_datetime(&row.get(0)));
+
+        if let Some(run_at) = run_at {
+            increment_counter!("heartbeat", "queue" => queue.to_owned());
+
+            if let Ok(d) = (Utc::now() - run_at).to_std() {
+                histogram!("duration", d, "queue" => queue.to_owned(), "type" => "running");
+            }
+            debug!("heartbeat job");
+            Ok(())
+        } else {
+            debug!("job not found");
+            Err(Error::JobNotFound {
+                job_id: job_id.to_string(),
+                queue: queue.to_string(),
+                run_id: *run_id,
+            })
+        }
+    }
 }
 
 #[inline]
@@ -967,7 +970,6 @@ impl ServerCertVerifier for NoHostnameTlsVerifier {
 mod tests {
     use super::*;
     use chrono::DurationRound;
-    use uuid::Uuid;
 
     #[tokio::test]
     async fn test_reschedule_replace_pk_change() -> anyhow::Result<()> {
@@ -1593,6 +1595,70 @@ mod tests {
             .complete(&next.queue, &next.id, &next.run_id.unwrap())
             .await;
         assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat() -> anyhow::Result<()> {
+        let db_url = std::env::var("DATABASE_URL")?;
+        let store = PgStore::default(&db_url).await?;
+        let job_id = Uuid::new_v4().to_string();
+        let queue = Uuid::new_v4().to_string();
+        let payload = &RawValue::from_string("{}".to_string())?;
+        let job = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: Some(PositiveI32::new(3).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+        store.enqueue(EnqueueMode::Unique, &[job]).await?;
+
+        let existing = store.get(&queue, &job_id).await?;
+        assert!(existing.is_some());
+        let existing = existing.unwrap();
+        assert!(existing.run_id.is_none());
+
+        let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
+        assert!(next.is_some());
+        let jobs = next.unwrap();
+        let next = jobs.get(0).unwrap();
+
+        let state = &RawValue::from_string(r#"{"my": "state"}"#.to_string())?;
+        let result = store
+            .heartbeat(&queue, &next.id, &next.run_id.unwrap(), Some(state))
+            .await;
+        let heartbeated_job = store.get(&queue, &job_id).await?;
+        assert!(heartbeated_job.is_some());
+        let heartbeated_job = heartbeated_job.unwrap();
+        assert!(heartbeated_job.run_id.is_some());
+        assert!(heartbeated_job.state.is_some());
+        assert_eq!(
+            state.to_string(),
+            heartbeated_job.state.unwrap().to_string()
+        );
+
+        let result = store
+            .complete(&queue, &next.id, &next.run_id.unwrap())
+            .await;
+        assert!(result.is_ok());
+        assert!(!store.exists(&next.queue, &next.id).await?);
+
+        let next_run_id = &next.run_id.unwrap();
+        let result = store.heartbeat(&queue, &next.id, &next_run_id, None).await;
+        assert!(
+            matches!(
+                result.unwrap_err(),
+                Error::JobNotFound {
+                    job_id: job_id,
+                    queue: queue,
+                    run_id: next_run_id,
+                }
+            ),
+            "doesn't exist anymore, should return job not exists error"
+        );
         Ok(())
     }
 }

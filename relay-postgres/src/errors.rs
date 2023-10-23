@@ -1,4 +1,5 @@
 use thiserror::Error;
+use uuid::Uuid;
 
 /// The Job Result.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -15,7 +16,7 @@ pub enum Error {
     JobNotFound {
         job_id: String,
         queue: String,
-        run_id: String,
+        run_id: Uuid,
     },
 
     #[error("Backend error: {message}. Is retryable: {is_retryable}.")]
