@@ -736,6 +736,131 @@ impl PgStore {
             })
         }
     }
+
+    /// Reset records to be retries and deletes those that have reached their max.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
+    #[tracing::instrument(name = "pg_reap_timeouts", level = "debug", skip(self))]
+    async fn reap(&self, interval_seconds: u64) -> Result<()> {
+        let client = self.pool.get().await?;
+
+        let stmt = client
+            .prepare_cached(
+                r#"
+            UPDATE internal_state
+            SET last_run=NOW()
+            WHERE last_run <= NOW() - $1::text::interval"#,
+            )
+            .await?;
+
+        let rows_affected = client
+            .execute(
+                &stmt,
+                &[&format!(
+                    "{}s",
+                    match i64::try_from(interval_seconds) {
+                        Ok(n) => n,
+                        Err(_) => i64::MAX,
+                    }
+                )],
+            )
+            .await?;
+
+        // another instance has already updated OR time hasn't been hit yet
+        if rows_affected == 0 {
+            return Ok(());
+        }
+
+        debug!("running timeout & delete reaper");
+
+        let stmt = client
+            .prepare_cached(
+                r#"
+               WITH cte_max_retries AS (
+                    UPDATE jobs
+                        SET in_flight=false,
+                            retries_remaining=retries_remaining-1
+                        WHERE
+                            in_flight=true AND
+                            expires_at < NOW() AND
+                            retries_remaining > 0
+                        RETURNING queue
+                ),
+                cte_no_max_retries AS (
+                    UPDATE jobs
+                        SET in_flight=false
+                        WHERE
+                            in_flight=true AND
+                            expires_at < NOW() AND
+                            retries_remaining < 0
+                        RETURNING queue
+                )
+                SELECT queue, COUNT(queue)
+                FROM (
+                         SELECT queue
+                         FROM cte_max_retries
+                         UNION ALL
+                         SELECT queue
+                         FROM cte_no_max_retries
+                     ) as grouped
+                GROUP BY queue
+            "#,
+            )
+            .await?;
+
+        let stream = client
+            .query_raw(&stmt, &[] as &[i32])
+            .await
+            .map_err(|e| Error::Backend {
+                message: e.to_string(),
+                is_retryable: is_retryable(e),
+            })?;
+        tokio::pin!(stream);
+
+        while let Some(row) = stream.next().await {
+            let row = row?;
+            let queue: String = row.get(0);
+            let count: i64 = row.get(1);
+            debug!(queue = %queue, count = count, "retrying jobs");
+            counter!("retries", u64::try_from(count).unwrap_or_default(), "queue" => queue);
+        }
+
+        let stmt = client
+            .prepare_cached(
+                r#"
+               WITH cte_updates AS (
+                   DELETE FROM jobs
+                   WHERE
+                       in_flight=true AND
+                       expires_at < NOW() AND
+                       retries_remaining = 0
+                   RETURNING queue
+               )
+               SELECT queue, COUNT(queue)
+               FROM cte_updates
+               GROUP BY queue
+            "#,
+            )
+            .await?;
+
+        let stream = client.query_raw(&stmt, &[] as &[i32]).await?;
+        tokio::pin!(stream);
+
+        while let Some(row) = stream.next().await {
+            let row = row?;
+            let queue: String = row.get(0);
+            let count: i64 = row.get(1);
+            warn!(
+                count = count,
+                queue = %queue,
+                "deleted records from queue that reached their max retries"
+            );
+            counter!("errors", u64::try_from(count).unwrap_or_default(), "queue" => queue, "type" => "max_retries");
+        }
+        Ok(())
+    }
 }
 
 #[inline]
