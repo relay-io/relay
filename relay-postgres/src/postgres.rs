@@ -627,6 +627,8 @@ impl PgStore {
                 .query_opt(&delete_stmt, &[&queue, &job_id, &run_id])
                 .await?
                 .map(|row| Utc.from_utc_datetime(&row.get(0)));
+
+            // only if row exists should we try the insert
             if previous_run_at.is_some() {
                 let stmt = enqueue_stmt(mode, &transaction).await?;
 
