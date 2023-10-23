@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use std::{str::FromStr, time::Duration};
 use tokio_postgres::error::SqlState;
-use tokio_postgres::types::{BorrowToSql, Json, ToSql};
+use tokio_postgres::types::{Json, ToSql};
 use tokio_postgres::{Config as PostgresConfig, Row, Statement};
 use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, warn};

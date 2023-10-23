@@ -45,7 +45,7 @@ impl Error {
 
     #[inline]
     #[must_use]
-    pub fn is_retryable(&self) -> bool {
+    pub const fn is_retryable(&self) -> bool {
         match self {
             Error::JobExists { .. } | Error::JobNotFound { .. } => false,
             Error::Backend { is_retryable, .. } => *is_retryable,

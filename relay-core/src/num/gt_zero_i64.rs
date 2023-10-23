@@ -13,7 +13,6 @@ impl GtZeroI64 {
             None
         }
     }
-
     pub const fn get(&self) -> i64 {
         self.0
     }

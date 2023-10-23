@@ -53,7 +53,6 @@ pub(crate) async fn run_migrations(
 
         transaction.batch_execute(m.sql).await?;
     }
-
     transaction.commit().await?;
     Ok(())
 }
