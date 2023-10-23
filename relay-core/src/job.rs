@@ -1,4 +1,5 @@
 /// This is a custom enqueue mode that determines the behaviour of the enqueue function.
+#[derive(PartialEq, Eq)]
 pub enum EnqueueMode {
     /// This ensures the Job is unique by Job ID and will return an error id any Job already exists.
     Unique,
