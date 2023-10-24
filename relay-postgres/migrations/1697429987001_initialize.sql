@@ -1,19 +1,19 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE IF NOT EXISTS jobs (
-    id           varchar NOT NULL,
-    queue        varchar NOT NULL,
-    timeout      interval NOT NULL,
-    max_retries  integer DEFAULT NULL,
+    id                varchar NOT NULL,
+    queue             varchar NOT NULL,
+    timeout           interval NOT NULL,
+    max_retries       integer DEFAULT NULL,
     retries_remaining integer DEFAULT NULL,
-    data         jsonb NOT NULL,
-    state        jsonb DEFAULT NULL,
-    in_flight    boolean DEFAULT FALSE,
-    run_id       uuid DEFAULT NULL,
-    run_at       timestamp without time zone NOT NULL,
-    expires_at   timestamp without time zone,
-    updated_at   timestamp without time zone NOT NULL,
-    created_at   timestamp without time zone NOT NULL,
+    data              jsonb NOT NULL,
+    state             jsonb DEFAULT NULL,
+    in_flight         boolean DEFAULT FALSE,
+    run_id            uuid DEFAULT NULL,
+    run_at            timestamp without time zone NOT NULL,
+    expires_at        timestamp without time zone,
+    updated_at        timestamp without time zone NOT NULL,
+    created_at        timestamp without time zone NOT NULL,
     PRIMARY KEY (queue, id)
 );
 CREATE INDEX IF NOT EXISTS idx_queue_in_flight_created_at ON jobs (queue, in_flight, run_at);

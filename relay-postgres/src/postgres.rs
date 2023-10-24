@@ -783,6 +783,7 @@ impl PgStore {
                WITH cte_max_retries AS (
                     UPDATE jobs
                         SET in_flight=false,
+                            run_id=NULL,
                             retries_remaining=retries_remaining-1
                         WHERE
                             in_flight=true AND
@@ -792,11 +793,12 @@ impl PgStore {
                 ),
                 cte_no_max_retries AS (
                     UPDATE jobs
-                        SET in_flight=false
+                        SET in_flight=false,
+                            run_id=NULL
                         WHERE
                             in_flight=true AND
                             expires_at < NOW() AND
-                            retries_remaining < 0
+                            retries_remaining IS NULL
                         RETURNING queue
                 )
                 SELECT queue, COUNT(queue)
@@ -812,13 +814,7 @@ impl PgStore {
             )
             .await?;
 
-        let stream = client
-            .query_raw(&stmt, &[] as &[i32])
-            .await
-            .map_err(|e| Error::Backend {
-                message: e.to_string(),
-                is_retryable: is_retryable(e),
-            })?;
+        let stream = client.query_raw(&stmt, &[] as &[i32]).await?;
         tokio::pin!(stream);
 
         while let Some(row) = stream.next().await {
@@ -1786,6 +1782,97 @@ mod tests {
             ),
             "doesn't exist anymore, should return job not exists error"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reap() -> anyhow::Result<()> {
+        let db_url = std::env::var("DATABASE_URL")?;
+        let store = PgStore::default(&db_url).await?;
+        let job_id = Uuid::new_v4().to_string();
+        let queue = Uuid::new_v4().to_string();
+        let payload = &RawValue::from_string("{}".to_string())?;
+        let job_no_retries_immediate_timeout = NewJob {
+            id: &job_id,
+            queue: &queue,
+            timeout: PositiveI32::new(0).unwrap(),
+            max_retries: Some(PositiveI32::new(0).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+        let job_id2 = Uuid::new_v4().to_string();
+        let job_retries_remaining_minus_one = NewJob {
+            id: &job_id2,
+            queue: &queue,
+            timeout: PositiveI32::new(0).unwrap(),
+            max_retries: Some(PositiveI32::new(1).unwrap()),
+            payload,
+            state: None,
+            run_at: None,
+        };
+        let job_id3 = Uuid::new_v4().to_string();
+        let job_retries_forever = NewJob {
+            id: &job_id3,
+            queue: &queue,
+            timeout: PositiveI32::new(0).unwrap(),
+            max_retries: None,
+            payload,
+            state: None,
+            run_at: None,
+        };
+        store
+            .enqueue(
+                EnqueueMode::Unique,
+                &[
+                    job_no_retries_immediate_timeout,
+                    job_retries_remaining_minus_one,
+                    job_retries_forever,
+                ],
+            )
+            .await?;
+        assert!(store.exists(&queue, &job_id).await?);
+        assert!(store.exists(&queue, &job_id2).await?);
+        assert!(store.exists(&queue, &job_id3).await?);
+
+        store.next(&queue, GtZeroI64::new(3).unwrap()).await?;
+        store.reap(0).await?;
+        assert!(
+            !store.exists(&queue, &job_id).await?,
+            "Job should have been removed due to no more retries and timed out"
+        );
+        assert!(store.exists(&queue, &job_id2).await?);
+        assert!(store.exists(&queue, &job_id3).await?);
+
+        let job_one_more_remaining = store.get(&queue, &job_id2).await?;
+        assert!(job_one_more_remaining.is_some());
+        let job_one_more_remaining = job_one_more_remaining.unwrap();
+        assert_eq!(job_id2, job_one_more_remaining.id);
+        assert_eq!(
+            PositiveI32::new(0),
+            job_one_more_remaining.retries_remaining
+        );
+        assert_eq!(None, job_one_more_remaining.run_id);
+
+        let job_forever_run_id = store.get(&queue, &job_id3).await?;
+        assert!(job_forever_run_id.is_some());
+        let job_forever_run_id = job_forever_run_id.unwrap();
+        assert_eq!(job_id3, job_forever_run_id.id);
+        assert_eq!(None, job_forever_run_id.retries_remaining);
+        assert_eq!(None, job_forever_run_id.run_id);
+
+        store.next(&queue, GtZeroI64::new(3).unwrap()).await?;
+        store.reap(0).await?;
+        assert!(
+            !store.exists(&queue, &job_id2).await?,
+            "Job should have been removed due to no more retries and timed out"
+        );
+        assert!(store.exists(&queue, &job_id3).await?);
+        let job_forever_run_id = store.get(&queue, &job_id3).await?;
+        assert!(job_forever_run_id.is_some());
+        let job_forever_run_id = job_forever_run_id.unwrap();
+        assert_eq!(None, job_forever_run_id.retries_remaining);
+        assert_eq!(None, job_forever_run_id.run_id);
         Ok(())
     }
 }
