@@ -8,3 +8,22 @@ description.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+relay-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "macros","signal"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["raw_value"] }
+tracing.workspace = true
+metrics.workspace = true
+backoff-rs.workspace = true
+percent-encoding.workspace = true
+async-channel.workspace = true
+axum = { version = "0.6.20", default-features = false, features = ["http1", "http2", "json","matched-path","original-uri","query","tokio","tower-log"] }
+tower-http = { version = "0.4.4", features = ["trace"] }
+uuid = { workspace = true, features = ["v4"] }
+relay-postgres = { version = "*", path="../relay-postgres"}
+
+[dev-dependencies]
+portpicker = "0.1.1"
+chrono.workspace = true

@@ -234,7 +234,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_enqueue", level = "debug", skip_all, fields(mode, jobs = jobs.len()))]
-    async fn enqueue<'a>(&self, mode: EnqueueMode, jobs: &[NewJob<'a>]) -> Result<()> {
+    pub async fn enqueue<'a>(&self, mode: EnqueueMode, jobs: &[NewJob<'a>]) -> Result<()> {
         let mut client = self.pool.get().await?;
         let transaction = client.transaction().await?;
         let stmt = enqueue_stmt(mode, &transaction).await?;
@@ -299,7 +299,7 @@ impl PgStore {
     /// # Errors
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
-    async fn get(&self, queue: &str, job_id: &str) -> Result<Option<Job>> {
+    pub async fn get(&self, queue: &str, job_id: &str) -> Result<Option<Job>> {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
@@ -364,7 +364,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_next", level = "debug", skip_all, fields(num_jobs=num_jobs.get(), queue=%queue))]
-    async fn next(&self, queue: &str, num_jobs: GtZeroI64) -> Result<Option<Vec<Job>>> {
+    pub async fn next(&self, queue: &str, num_jobs: GtZeroI64) -> Result<Option<Vec<Job>>> {
         let client = self.pool.get().await?;
 
         // MUST USE CTE WITH `FOR UPDATE SKIP LOCKED LIMIT` otherwise the Postgres Query Planner
@@ -459,7 +459,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_delete", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
-    async fn delete(&self, queue: &str, job_id: &str) -> Result<()> {
+    pub async fn delete(&self, queue: &str, job_id: &str) -> Result<()> {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
@@ -497,7 +497,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_complete", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
-    async fn complete(&self, queue: &str, job_id: &str, run_id: &Uuid) -> Result<()> {
+    pub async fn complete(&self, queue: &str, job_id: &str, run_id: &Uuid) -> Result<()> {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
@@ -547,7 +547,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_reschedule", level = "debug", skip_all, fields(job_id=%job.id, queue=%job.queue))]
-    async fn reschedule<'a>(
+    pub async fn reschedule<'a>(
         &self,
         mode: EnqueueMode,
         queue: &str,
@@ -683,7 +683,7 @@ impl PgStore {
     /// Will return `Err` if there is any communication issues with the backend Postgres DB or the
     /// Job attempting to be updated cannot be found.
     #[tracing::instrument(name = "pg_heartbeat", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
-    async fn heartbeat<'a>(
+    pub async fn heartbeat<'a>(
         &self,
         queue: &str,
         job_id: &str,
@@ -745,7 +745,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_reap_timeouts", level = "debug", skip(self))]
-    async fn reap(&self, interval_seconds: u64) -> Result<()> {
+    pub async fn reap(&self, interval_seconds: u64) -> Result<()> {
         let client = self.pool.get().await?;
 
         let stmt = client
