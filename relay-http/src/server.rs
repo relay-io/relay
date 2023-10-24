@@ -52,16 +52,13 @@ impl Server {
         // TODO: Can in-flight be replaced with the run_id, where NULL = in-flight = false, else true
         //
         // POST /v1/queues/jobs - accept optional query param for mode of operation?
-        // - POST is interesting as it has different modes of operation:
-        //   - (Default behaviour) Unique enqueue, error on duplicate(first one encountered, entire transaction aborted.
-        //   - Do nothing if already exists.
-        //   - Replace if already exists - This is exactly like PUT/reschedule except queue and job id can't be changed.
         //
         // GET  /v1/queues/:queue/jobs/:id
         // HEAD /v1/queues/:queue/jobs/:id
-        // PUT  /v1/queues/:queue/jobs/:id - Accepts entire Job, allowing rescheduling into different queue even if desired.
-        // DELETE /v1/queues/:queue/jobs/:id
-        // PATCH /v1/queues/:queue/jobs/:id - updates state + updated_at + expires_at only
+        // DELETE /v1/queues/:queue/jobs/:id - delete
+        // DELETE /v1/queues/:queue/jobs/:id/run_id/:run_id - complete
+        // PUT  /v1/queues/:queue/jobs/:id/run_id/:run_id - Reschedule + mode
+        // PATCH /v1/queues/:queue/jobs/:id/run_id/:run_id - updates state + updated_at + expires_at only
         Router::new()
             // .route("/v1/queues/jobs", post(enqueue))
             // .route("/v1/queues/jobs", put(reschedule))
