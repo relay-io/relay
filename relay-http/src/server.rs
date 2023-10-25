@@ -6,7 +6,7 @@ use axum::routing::{delete, get, head, patch, post, put};
 use axum::{Json, Router};
 use metrics::increment_counter;
 use relay_core::job::EnqueueMode;
-use relay_postgres::{Job, NewJob, PgStore};
+use relay_postgres::{Error as PostgresError, Job, NewJob, PgStore};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use std::future::Future;
@@ -18,6 +18,48 @@ use uuid::Uuid;
 
 /// The internal HTTP server representation for Jobs.
 pub struct Server;
+
+#[derive(Deserialize)]
+struct EnqueueQueryInfo {
+    mode: Option<String>,
+}
+
+#[tracing::instrument(name = "http_enqueue", level = "debug", skip_all)]
+async fn enqueue(
+    State(state): State<Arc<PgStore>>,
+    params: Query<EnqueueQueryInfo>,
+    jobs: Json<Vec<NewJob>>,
+) -> Response {
+    increment_counter!("http_request", "endpoint" => "enqueue");
+
+    let EnqueueQueryInfo { mode } = params.0;
+    let mode = match mode.as_deref() {
+        Some("ignore") => EnqueueMode::Ignore,
+        Some("replace") => EnqueueMode::Replace,
+        _ => EnqueueMode::Unique,
+    };
+
+    if let Err(e) = state.enqueue(mode, &jobs).await {
+        increment_counter!("errors", "endpoint" => "enqueue", "type" => e.error_type());
+        match e {
+            PostgresError::Backend { .. } => {
+                if e.is_retryable() {
+                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                } else {
+                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
+                }
+            }
+            PostgresError::JobExists { .. } => {
+                (StatusCode::CONFLICT, e.to_string()).into_response()
+            }
+            PostgresError::JobNotFound { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            }
+        }
+    } else {
+        StatusCode::ACCEPTED.into_response()
+    }
+}
 
 #[allow(clippy::unused_async)]
 async fn health() {}
@@ -60,7 +102,7 @@ impl Server {
         // PUT  /v1/queues/:queue/jobs/:id/run_id/:run_id - Reschedule + mode
         // PATCH /v1/queues/:queue/jobs/:id/run_id/:run_id - updates state + updated_at + expires_at only
         Router::new()
-            // .route("/v1/queues/jobs", post(enqueue))
+            .route("/v1/queues/jobs", post(enqueue))
             // .route("/v1/queues/jobs", put(reschedule))
             // .route("/v1/queues/:queue/jobs", get(next))
             // .route("/v1/queues/:queue/jobs/:id", head(exists))
