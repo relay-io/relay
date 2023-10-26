@@ -24,7 +24,6 @@ pub struct Server;
 struct EnqueueQueryInfo {
     mode: Option<String>,
 }
-
 #[tracing::instrument(name = "http_enqueue", level = "debug", skip_all)]
 async fn enqueue(
     State(state): State<Arc<PgStore>>,

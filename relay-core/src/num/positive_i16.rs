@@ -6,6 +6,7 @@ use thiserror::Error;
 pub struct PositiveI16(i16);
 
 impl PositiveI16 {
+    #[must_use]
     pub const fn new(value: i16) -> Option<Self> {
         if value >= 0 {
             Some(Self(value))
@@ -14,16 +15,17 @@ impl PositiveI16 {
         }
     }
 
+    #[must_use]
     pub const fn get(&self) -> i16 {
         self.0
     }
 }
 
 impl TryFrom<i16> for PositiveI16 {
-    type Error = PositiveI16ParseError;
+    type Error = ParseError;
 
     fn try_from(i: i16) -> std::result::Result<Self, Self::Error> {
-        Self::new(i).ok_or(PositiveI16ParseError::NegativeOverflow { value: i })
+        Self::new(i).ok_or(ParseError::NegativeOverflow { value: i })
     }
 }
 
@@ -44,7 +46,7 @@ impl<'de> Deserialize<'de> for PositiveI16 {
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
-pub enum PositiveI16ParseError {
+pub enum ParseError {
     /// Indicates that the inter is not a valid i32.
     #[error(transparent)]
     ParseInt32Error {

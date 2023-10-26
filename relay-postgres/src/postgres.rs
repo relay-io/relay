@@ -326,7 +326,7 @@ impl PgStore {
             .await?;
 
         let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
-        let job = row.as_ref().map(|r| r.into());
+        let job = row.as_ref().map(std::convert::Into::into);
 
         increment_counter!("get", "queue" => queue.to_owned());
         debug!("got job");
@@ -974,6 +974,7 @@ impl From<&Row> for Job {
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
 const fn interval_seconds(interval: Interval) -> i32 {
     let month_secs = interval.months * 30 * 24 * 60 * 60;
     let day_secs = interval.days * 24 * 60 * 60;
@@ -1081,9 +1082,7 @@ impl ServerCertVerifier for NoHostnameTlsVerifier {
             ocsp_response,
             now,
         ) {
-            Err(rustls::Error::InvalidCertificate(cert_error))
-                if cert_error == rustls::CertificateError::NotValidForName =>
-            {
+            Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName)) => {
                 Ok(ServerCertVerified::assertion())
             }
             res => res,
@@ -1142,7 +1141,7 @@ mod tests {
 
         let next = store.next(&queue2, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
-        assert_eq!(1, *&next.as_ref().unwrap().len());
+        assert_eq!(1, next.as_ref().unwrap().len());
         let next = &next.unwrap()[0];
 
         let result = store
@@ -1238,7 +1237,7 @@ mod tests {
 
         let next = store.next(&queue2, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
-        assert_eq!(1, *&next.as_ref().unwrap().len());
+        assert_eq!(1, next.as_ref().unwrap().len());
         let next = &next.unwrap()[0];
 
         let result = store
@@ -1320,7 +1319,7 @@ mod tests {
 
         let next = store.next(&queue2, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
-        assert_eq!(1, *&next.as_ref().unwrap().len());
+        assert_eq!(1, next.as_ref().unwrap().len());
         let next = &next.unwrap()[0];
         let result = store
             .reschedule(
@@ -1364,7 +1363,7 @@ mod tests {
 
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
-        assert_eq!(1, *&next.as_ref().unwrap().len());
+        assert_eq!(1, next.as_ref().unwrap().len());
         let next = &next.unwrap()[0];
 
         let now = Utc::now().duration_trunc(chrono::Duration::milliseconds(100))?;
@@ -1375,7 +1374,7 @@ mod tests {
             max_retries: Some(PositiveI16::new(4).unwrap()),
             payload: payload2.clone(),
             state: None,
-            run_at: Some(now.clone()),
+            run_at: Some(now),
         };
         store
             .reschedule(
@@ -1463,7 +1462,7 @@ mod tests {
 
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
-        assert_eq!(1, *&next.as_ref().unwrap().len());
+        assert_eq!(1, next.as_ref().unwrap().len());
 
         store.enqueue(EnqueueMode::Ignore, [job2].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
@@ -1513,7 +1512,7 @@ mod tests {
 
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
-        assert_eq!(1, *&next.as_ref().unwrap().len());
+        assert_eq!(1, next.as_ref().unwrap().len());
 
         store.enqueue(EnqueueMode::Replace, [job2].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
@@ -1623,7 +1622,7 @@ mod tests {
 
         let result = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
         assert!(result.is_some());
-        assert_eq!(1, *&result.as_ref().unwrap().len());
+        assert_eq!(1, result.as_ref().unwrap().len());
         let result = &result.as_ref().unwrap()[0];
         assert_eq!(job_id, result.id);
         assert_eq!(queue, result.queue);
@@ -1765,7 +1764,7 @@ mod tests {
         assert!(!store.exists(&next.queue, &next.id).await?);
 
         let run_id = &next.run_id.unwrap();
-        let result = store.heartbeat(&queue, &next.id, &run_id, None).await;
+        let result = store.heartbeat(&queue, &next.id, run_id, None).await;
         assert_eq!(
             result.unwrap_err(),
             Error::JobNotFound {

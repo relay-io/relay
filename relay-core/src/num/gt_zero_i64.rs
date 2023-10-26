@@ -6,6 +6,7 @@ use thiserror::Error;
 pub struct GtZeroI64(i64);
 
 impl GtZeroI64 {
+    #[must_use]
     pub const fn new(value: i64) -> Option<Self> {
         if value > 0 {
             Some(Self(value))
@@ -13,16 +14,18 @@ impl GtZeroI64 {
             None
         }
     }
+
+    #[must_use]
     pub const fn get(&self) -> i64 {
         self.0
     }
 }
 
 impl TryFrom<i64> for GtZeroI64 {
-    type Error = GtZeroI64ParseError;
+    type Error = ParseError;
 
     fn try_from(i: i64) -> std::result::Result<Self, Self::Error> {
-        Self::new(i).ok_or(GtZeroI64ParseError::NegativeOverflow { value: i })
+        Self::new(i).ok_or(ParseError::NegativeOverflow { value: i })
     }
 }
 
@@ -43,7 +46,7 @@ impl<'de> Deserialize<'de> for GtZeroI64 {
 }
 
 #[derive(Error, Debug, PartialEq, Eq)]
-pub enum GtZeroI64ParseError {
+pub enum ParseError {
     /// Indicates that the inter is not a valid i32.
     #[error(transparent)]
     ParseInt64Error {
