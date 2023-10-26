@@ -6,6 +6,7 @@ use axum::routing::{delete, get, head, patch, post, put};
 use axum::{Json, Router};
 use metrics::increment_counter;
 use relay_core::job::EnqueueMode;
+use relay_core::num::PositiveI32;
 use relay_postgres::{Error as PostgresError, Job, NewJob, PgStore};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -39,7 +40,7 @@ async fn enqueue(
         _ => EnqueueMode::Unique,
     };
 
-    if let Err(e) = state.enqueue(mode, &jobs).await {
+    if let Err(e) = state.enqueue(mode, jobs.0.iter()).await {
         increment_counter!("errors", "endpoint" => "enqueue", "type" => e.error_type());
         match e {
             PostgresError::Backend { .. } => {
@@ -93,7 +94,7 @@ impl Server {
     pub(crate) fn init_app(backend: Arc<PgStore>) -> Router {
         // TODO: Can in-flight be replaced with the run_id, where NULL = in-flight = false, else true
         //
-        // POST /v1/queues/jobs - accept optional query param for mode of operation?
+        // ✅POST /v1/queues/jobs - accept optional query param for mode of operation?
         //
         // GET  /v1/queues/:queue/jobs/:id
         // HEAD /v1/queues/:queue/jobs/:id

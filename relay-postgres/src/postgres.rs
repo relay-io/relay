@@ -231,8 +231,12 @@ impl PgStore {
     /// # Errors
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
-    #[tracing::instrument(name = "pg_enqueue", level = "debug", skip_all, fields(mode, jobs = jobs.len()))]
-    pub async fn enqueue(&self, mode: EnqueueMode, jobs: &[NewJob]) -> Result<()> {
+    #[tracing::instrument(name = "pg_enqueue", level = "debug", skip_all, fields(mode))]
+    pub async fn enqueue(
+        &self,
+        mode: EnqueueMode,
+        jobs: impl Iterator<Item = &NewJob>,
+    ) -> Result<()> {
         let mut client = self.pool.get().await?;
         let transaction = client.transaction().await?;
         let stmt = enqueue_stmt(mode, &transaction).await?;
@@ -1130,10 +1134,10 @@ mod tests {
             run_at: None,
         };
 
-        store.enqueue(EnqueueMode::Unique, &[job1]).await?;
+        store.enqueue(EnqueueMode::Unique, [job1].iter()).await?;
         assert!(store.exists(&queue1, &job_id1).await?);
 
-        store.enqueue(EnqueueMode::Unique, &[job2]).await?;
+        store.enqueue(EnqueueMode::Unique, [job2].iter()).await?;
         assert!(store.exists(&queue2, &job_id2).await?);
 
         let next = store.next(&queue2, GtZeroI64::new(1).unwrap()).await?;
@@ -1226,10 +1230,10 @@ mod tests {
             run_at: None,
         };
 
-        store.enqueue(EnqueueMode::Unique, &[job1]).await?;
+        store.enqueue(EnqueueMode::Unique, [job1].iter()).await?;
         assert!(store.exists(&queue1, &job_id1).await?);
 
-        store.enqueue(EnqueueMode::Unique, &[job2]).await?;
+        store.enqueue(EnqueueMode::Unique, [job2].iter()).await?;
         assert!(store.exists(&queue2, &job_id2).await?);
 
         let next = store.next(&queue2, GtZeroI64::new(1).unwrap()).await?;
@@ -1308,10 +1312,10 @@ mod tests {
             run_at: None,
         };
 
-        store.enqueue(EnqueueMode::Unique, &[job1]).await?;
+        store.enqueue(EnqueueMode::Unique, [job1].iter()).await?;
         assert!(store.exists(&queue1, &job_id1).await?);
 
-        store.enqueue(EnqueueMode::Unique, &[job2]).await?;
+        store.enqueue(EnqueueMode::Unique, [job2].iter()).await?;
         assert!(store.exists(&queue2, &job_id2).await?);
 
         let next = store.next(&queue2, GtZeroI64::new(1).unwrap()).await?;
@@ -1355,7 +1359,7 @@ mod tests {
             run_at: None,
         };
 
-        store.enqueue(EnqueueMode::Unique, &[job]).await?;
+        store.enqueue(EnqueueMode::Unique, [job].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
 
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
@@ -1454,14 +1458,14 @@ mod tests {
             state: None,
             run_at: None,
         };
-        store.enqueue(EnqueueMode::Ignore, &[job1]).await?;
+        store.enqueue(EnqueueMode::Ignore, [job1].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
 
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
         assert_eq!(1, *&next.as_ref().unwrap().len());
 
-        store.enqueue(EnqueueMode::Ignore, &[job2]).await?;
+        store.enqueue(EnqueueMode::Ignore, [job2].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
 
         let j = store.get(&queue, &job_id).await?;
@@ -1504,14 +1508,14 @@ mod tests {
             state: None,
             run_at: None,
         };
-        store.enqueue(EnqueueMode::Replace, &[job1]).await?;
+        store.enqueue(EnqueueMode::Replace, [job1].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
 
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
         assert_eq!(1, *&next.as_ref().unwrap().len());
 
-        store.enqueue(EnqueueMode::Replace, &[job2]).await?;
+        store.enqueue(EnqueueMode::Replace, [job2].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
 
         let j = store.get(&queue, &job_id).await?;
@@ -1554,10 +1558,10 @@ mod tests {
             state: None,
             run_at: None,
         };
-        store.enqueue(EnqueueMode::Unique, &[job1]).await?;
+        store.enqueue(EnqueueMode::Unique, [job1].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
 
-        let result = store.enqueue(EnqueueMode::Unique, &[job2]).await;
+        let result = store.enqueue(EnqueueMode::Unique, [job2].iter()).await;
         assert_eq!(
             Err(Error::JobExists {
                 job_id: job_id.clone(),
@@ -1593,7 +1597,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        store.enqueue(EnqueueMode::Unique, &[job1]).await?;
+        store.enqueue(EnqueueMode::Unique, [job1].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
 
         let result = store.get(&queue, &job_id).await?;
@@ -1608,7 +1612,7 @@ mod tests {
         assert!(result.state.is_none());
         assert!(result.run_id.is_none());
 
-        let result = store.enqueue(EnqueueMode::Unique, &[job2]).await;
+        let result = store.enqueue(EnqueueMode::Unique, [job2].iter()).await;
         assert_eq!(
             Err(Error::JobExists {
                 job_id: job_id.clone(),
@@ -1653,7 +1657,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        store.enqueue(EnqueueMode::Unique, &[job]).await?;
+        store.enqueue(EnqueueMode::Unique, [job].iter()).await?;
         assert!(store.exists(&queue, &job_id).await?);
 
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
@@ -1686,7 +1690,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        store.enqueue(EnqueueMode::Unique, &[job]).await?;
+        store.enqueue(EnqueueMode::Unique, [job].iter()).await?;
 
         let existing = store.get(&queue, &job_id).await?;
         assert!(existing.is_some());
@@ -1728,7 +1732,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        store.enqueue(EnqueueMode::Unique, &[job]).await?;
+        store.enqueue(EnqueueMode::Unique, [job].iter()).await?;
 
         let existing = store.get(&queue, &job_id).await?;
         assert!(existing.is_some());
@@ -1813,11 +1817,12 @@ mod tests {
         store
             .enqueue(
                 EnqueueMode::Unique,
-                &[
+                [
                     job_no_retries_immediate_timeout,
                     job_retries_remaining_minus_one,
                     job_retries_forever,
-                ],
+                ]
+                .iter(),
             )
             .await?;
         assert!(store.exists(&queue, &job_id).await?);
