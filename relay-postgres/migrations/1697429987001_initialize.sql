@@ -4,8 +4,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     id                varchar NOT NULL,
     queue             varchar NOT NULL,
     timeout           interval NOT NULL,
-    max_retries       integer DEFAULT NULL, --  TODO: change to SMALLINT
-    retries_remaining integer DEFAULT NULL, --  TODO: change to SMALLINT
+    max_retries       smallint DEFAULT NULL,
+    retries_remaining smallint DEFAULT NULL,
     data              jsonb NOT NULL,
     state             jsonb DEFAULT NULL,
     in_flight         boolean DEFAULT FALSE,

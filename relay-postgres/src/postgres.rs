@@ -8,7 +8,7 @@ use deadpool_postgres::{
 use metrics::{counter, histogram, increment_counter};
 use pg_interval::Interval;
 use relay_core::job::EnqueueMode;
-use relay_core::num::{GtZeroI64, PositiveI32};
+use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
 use rustls::client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier};
 use rustls::{Certificate, OwnedTrustAnchor, RootCertStore, ServerName};
 use serde::{Deserialize, Serialize};
@@ -48,7 +48,7 @@ pub struct NewJob {
 
     /// Determines how many times the Job can be retried, due to timeouts, before being considered
     /// permanently failed. Infinite retries are supported by using a negative number eg. -1
-    pub max_retries: Option<PositiveI32>,
+    pub max_retries: Option<PositiveI16>,
 
     /// The raw JSON payload that the job runner will receive.
     pub payload: Box<RawValue>,
@@ -78,10 +78,10 @@ pub struct Job {
 
     /// Determines how many times the Job can be retried, due to timeouts, before being considered
     /// permanently failed. Infinite retries are supported by using a negative number eg. -1
-    pub max_retries: Option<PositiveI32>,
+    pub max_retries: Option<PositiveI16>,
 
     /// Specifies how many more times the Job can be retried.
-    pub retries_remaining: Option<PositiveI32>,
+    pub retries_remaining: Option<PositiveI16>,
 
     /// The raw payload that the `Job` requires to run.
     pub payload: Box<RawValue>,
@@ -948,16 +948,16 @@ impl From<&Row> for Job {
                     warn!("invalid timeout value, defaulting to 30s");
                     PositiveI32::new(30).unwrap()
                 }),
-            max_retries: row.get::<usize, Option<i32>>(3).map(|i| {
-                PositiveI32::new(i).unwrap_or_else(|| {
+            max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
+                PositiveI16::new(i).unwrap_or_else(|| {
                     warn!("invalid max_retries value, defaulting to 0");
-                    PositiveI32::new(0).unwrap()
+                    PositiveI16::new(0).unwrap()
                 })
             }),
-            retries_remaining: row.get::<usize, Option<i32>>(4).map(|i| {
-                PositiveI32::new(i).unwrap_or_else(|| {
+            retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
+                PositiveI16::new(i).unwrap_or_else(|| {
                     warn!("invalid max_retries value, defaulting to 0");
-                    PositiveI32::new(0).unwrap()
+                    PositiveI16::new(0).unwrap()
                 })
             }),
             payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
@@ -1110,7 +1110,7 @@ mod tests {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
             state: None,
             run_at: None,
@@ -1119,7 +1119,7 @@ mod tests {
             id: job_id2.clone(),
             queue: queue2.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload2.clone(),
             state: None,
             run_at: None,
@@ -1128,7 +1128,7 @@ mod tests {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
             state: None,
             run_at: None,
@@ -1206,7 +1206,7 @@ mod tests {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
             state: None,
             run_at: None,
@@ -1215,7 +1215,7 @@ mod tests {
             id: job_id2.clone(),
             queue: queue2.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload2.clone(),
             state: None,
             run_at: None,
@@ -1224,7 +1224,7 @@ mod tests {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
             state: None,
             run_at: None,
@@ -1288,7 +1288,7 @@ mod tests {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
             state: None,
             run_at: None,
@@ -1297,7 +1297,7 @@ mod tests {
             id: job_id2.clone(),
             queue: queue2.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload2.clone(),
             state: None,
             run_at: None,
@@ -1306,7 +1306,7 @@ mod tests {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
             state: None,
             run_at: None,
@@ -1353,7 +1353,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1372,7 +1372,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(31).unwrap(),
-            max_retries: Some(PositiveI32::new(4).unwrap()),
+            max_retries: Some(PositiveI16::new(4).unwrap()),
             payload: payload2.clone(),
             state: None,
             run_at: Some(now.clone()),
@@ -1393,8 +1393,8 @@ mod tests {
         assert_eq!(reschedule.id, result.id);
         assert_eq!(reschedule.queue, result.queue);
         assert_eq!(PositiveI32::new(31).unwrap(), result.timeout);
-        assert_eq!(Some(PositiveI32::new(4).unwrap()), result.max_retries);
-        assert_eq!(Some(PositiveI32::new(4).unwrap()), result.retries_remaining);
+        assert_eq!(Some(PositiveI16::new(4).unwrap()), result.max_retries);
+        assert_eq!(Some(PositiveI16::new(4).unwrap()), result.retries_remaining);
         assert_eq!(payload2.to_string(), result.payload.to_string());
         assert!(result.state.is_none());
         assert!(result.run_id.is_none());
@@ -1444,7 +1444,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1453,7 +1453,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(31).unwrap(),
-            max_retries: Some(PositiveI32::new(4).unwrap()),
+            max_retries: Some(PositiveI16::new(4).unwrap()),
             payload: payload2.clone(),
             state: None,
             run_at: None,
@@ -1474,8 +1474,8 @@ mod tests {
         assert_eq!(job_id, j.id);
         assert_eq!(queue, j.queue);
         assert_eq!(PositiveI32::new(30).unwrap(), j.timeout);
-        assert_eq!(Some(PositiveI32::new(3).unwrap()), j.max_retries);
-        assert_eq!(Some(PositiveI32::new(3).unwrap()), j.retries_remaining);
+        assert_eq!(Some(PositiveI16::new(3).unwrap()), j.max_retries);
+        assert_eq!(Some(PositiveI16::new(3).unwrap()), j.retries_remaining);
         assert_eq!(payload.to_string(), j.payload.to_string());
         assert!(j.state.is_none());
         assert!(j.run_id.is_some());
@@ -1494,7 +1494,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1503,7 +1503,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(31).unwrap(),
-            max_retries: Some(PositiveI32::new(4).unwrap()),
+            max_retries: Some(PositiveI16::new(4).unwrap()),
             payload: payload2.clone(),
             state: None,
             run_at: None,
@@ -1524,8 +1524,8 @@ mod tests {
         assert_eq!(job_id, j.id);
         assert_eq!(queue, j.queue);
         assert_eq!(PositiveI32::new(31).unwrap(), j.timeout);
-        assert_eq!(Some(PositiveI32::new(4).unwrap()), j.max_retries);
-        assert_eq!(Some(PositiveI32::new(4).unwrap()), j.retries_remaining);
+        assert_eq!(Some(PositiveI16::new(4).unwrap()), j.max_retries);
+        assert_eq!(Some(PositiveI16::new(4).unwrap()), j.retries_remaining);
         assert_eq!(payload2.to_string(), j.payload.to_string());
         assert!(j.state.is_none());
         assert!(j.run_id.is_none());
@@ -1544,7 +1544,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1553,7 +1553,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(31).unwrap(),
-            max_retries: Some(PositiveI32::new(4).unwrap()),
+            max_retries: Some(PositiveI16::new(4).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1583,7 +1583,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1592,7 +1592,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1606,8 +1606,8 @@ mod tests {
         assert_eq!(job_id, result.id);
         assert_eq!(queue, result.queue);
         assert_eq!(PositiveI32::new(30).unwrap(), result.timeout);
-        assert_eq!(Some(PositiveI32::new(3).unwrap()), result.max_retries);
-        assert_eq!(Some(PositiveI32::new(3).unwrap()), result.retries_remaining);
+        assert_eq!(Some(PositiveI16::new(3).unwrap()), result.max_retries);
+        assert_eq!(Some(PositiveI16::new(3).unwrap()), result.retries_remaining);
         assert_eq!(payload.to_string(), result.payload.to_string());
         assert!(result.state.is_none());
         assert!(result.run_id.is_none());
@@ -1628,8 +1628,8 @@ mod tests {
         assert_eq!(job_id, result.id);
         assert_eq!(queue, result.queue);
         assert_eq!(PositiveI32::new(30).unwrap(), result.timeout);
-        assert_eq!(Some(PositiveI32::new(3).unwrap()), result.max_retries);
-        assert_eq!(Some(PositiveI32::new(3).unwrap()), result.retries_remaining);
+        assert_eq!(Some(PositiveI16::new(3).unwrap()), result.max_retries);
+        assert_eq!(Some(PositiveI16::new(3).unwrap()), result.retries_remaining);
         assert_eq!(payload.to_string(), result.payload.to_string());
         assert!(result.state.is_none());
         assert!(result.run_id.is_some());
@@ -1652,7 +1652,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: RawValue::from_string("{}".to_string())?,
             state: None,
             run_at: None,
@@ -1685,7 +1685,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1727,7 +1727,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
-            max_retries: Some(PositiveI32::new(3).unwrap()),
+            max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1789,7 +1789,7 @@ mod tests {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(0).unwrap(),
-            max_retries: Some(PositiveI32::new(0).unwrap()),
+            max_retries: Some(PositiveI16::new(0).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1799,7 +1799,7 @@ mod tests {
             id: job_id2.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(0).unwrap(),
-            max_retries: Some(PositiveI32::new(1).unwrap()),
+            max_retries: Some(PositiveI16::new(1).unwrap()),
             payload: payload.clone(),
             state: None,
             run_at: None,
@@ -1843,7 +1843,7 @@ mod tests {
         let job_one_more_remaining = job_one_more_remaining.unwrap();
         assert_eq!(job_id2, job_one_more_remaining.id);
         assert_eq!(
-            PositiveI32::new(0),
+            PositiveI16::new(0),
             job_one_more_remaining.retries_remaining
         );
         assert_eq!(None, job_one_more_remaining.run_id);
