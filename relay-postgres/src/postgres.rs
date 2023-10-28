@@ -339,7 +339,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_exists", level = "debug", skip_all, fields(job_id=%job_id, queue=%queue))]
-    async fn exists(&self, queue: &str, job_id: &str) -> Result<bool> {
+    pub async fn exists(&self, queue: &str, job_id: &str) -> Result<bool> {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
