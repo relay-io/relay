@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
     "relay",
+    "relay-client",
     "relay-core",
     "relay-http",
     "relay-postgres",

@@ -161,7 +161,7 @@ impl PgStore {
     pub async fn enqueue(
         &self,
         mode: EnqueueMode,
-        jobs: impl Iterator<Item = &NewJob>,
+        jobs: impl Iterator<Item = &NewJob<Box<RawValue>, Box<RawValue>>>,
     ) -> Result<()> {
         let mut client = self.pool.get().await?;
         let transaction = client.transaction().await?;
@@ -227,7 +227,11 @@ impl PgStore {
     /// # Errors
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
-    pub async fn get(&self, queue: &str, job_id: &str) -> Result<Option<Job>> {
+    pub async fn get(
+        &self,
+        queue: &str,
+        job_id: &str,
+    ) -> Result<Option<Job<Box<RawValue>, Box<RawValue>>>> {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
@@ -292,7 +296,11 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_next", level = "debug", skip_all, fields(num_jobs=num_jobs.get(), queue=%queue))]
-    pub async fn next(&self, queue: &str, num_jobs: GtZeroI64) -> Result<Option<Vec<Job>>> {
+    pub async fn next(
+        &self,
+        queue: &str,
+        num_jobs: GtZeroI64,
+    ) -> Result<Option<Vec<Job<Box<RawValue>, Box<RawValue>>>>> {
         let client = self.pool.get().await?;
 
         // MUST USE CTE WITH `FOR UPDATE SKIP LOCKED LIMIT` otherwise the Postgres Query Planner
@@ -348,11 +356,12 @@ impl PgStore {
         // on purpose NOT using num_jobs as the capacity to avoid the potential attack vector of
         // someone exhausting all memory by sending a large number even if there aren't that many
         // records in the database.
-        let mut jobs: Vec<Job> = if let Some(size) = stream.size_hint().1 {
-            Vec::with_capacity(size)
-        } else {
-            Vec::new()
-        };
+        let mut jobs: Vec<Job<Box<RawValue>, Box<RawValue>>> =
+            if let Some(size) = stream.size_hint().1 {
+                Vec::with_capacity(size)
+            } else {
+                Vec::new()
+            };
 
         while let Some(row) = stream.next().await {
             jobs.push(row_to_job(&row?));
@@ -481,7 +490,7 @@ impl PgStore {
         queue: &str,
         job_id: &str,
         run_id: &Uuid,
-        job: &NewJob,
+        job: &NewJob<Box<RawValue>, Box<RawValue>>,
     ) -> Result<()> {
         let now = Utc::now().naive_utc();
         let run_at = if let Some(run_at) = job.run_at {
@@ -864,7 +873,7 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
     Ok(stmt)
 }
 
-fn row_to_job(row: &Row) -> Job {
+fn row_to_job(row: &Row) -> Job<Box<RawValue>, Box<RawValue>> {
     Job {
         id: row.get(0),
         queue: row.get(1),

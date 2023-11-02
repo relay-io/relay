@@ -39,7 +39,7 @@ impl EnqueueQueryInfo {
 async fn enqueue(
     State(state): State<Arc<PgStore>>,
     params: Query<EnqueueQueryInfo>,
-    jobs: Json<Vec<NewJob>>,
+    jobs: Json<Vec<NewJob<Box<RawValue>, Box<RawValue>>>>,
 ) -> Response {
     increment_counter!("http_request", "endpoint" => "enqueue");
 
@@ -169,7 +169,7 @@ async fn reschedule(
     State(state): State<Arc<PgStore>>,
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
     params: Query<EnqueueQueryInfo>,
-    job: Json<NewJob>,
+    job: Json<NewJob<Box<RawValue>, Box<RawValue>>>,
 ) -> Response {
     increment_counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone());
 

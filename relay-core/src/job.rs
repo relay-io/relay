@@ -1,11 +1,12 @@
 use crate::num::{PositiveI16, PositiveI32};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
+use std::fmt::{Display, Formatter};
 use uuid::Uuid;
 
 /// This is a custom enqueue mode that determines the behaviour of the enqueue function.
 #[derive(PartialEq, Eq)]
+#[repr(u8)]
 pub enum EnqueueMode {
     /// This ensures the Job is unique by Job ID and will return an error id any Job already exists.
     Unique,
@@ -15,9 +16,19 @@ pub enum EnqueueMode {
     Replace,
 }
 
+impl Display for EnqueueMode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnqueueMode::Unique => write!(f, "unique"),
+            EnqueueMode::Ignore => write!(f, "ignore"),
+            EnqueueMode::Replace => write!(f, "replace"),
+        }
+    }
+}
+
 // Is a structure used to enqueue a new Job.
 #[derive(Serialize, Deserialize)]
-pub struct NewJob {
+pub struct NewJob<P, S> {
     /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
     pub id: String,
 
@@ -34,10 +45,10 @@ pub struct NewJob {
     pub max_retries: Option<PositiveI16>,
 
     /// The raw JSON payload that the job runner will receive.
-    pub payload: Box<RawValue>,
+    pub payload: P,
 
     /// The raw JSON payload that the job runner will receive.
-    pub state: Option<Box<RawValue>>,
+    pub state: Option<S>,
 
     /// With this you can optionally schedule/set a Job to be run only at a specific time in the
     /// future. This option should mainly be used for one-time jobs and scheduled jobs that have
@@ -47,7 +58,7 @@ pub struct NewJob {
 
 /// Job defines all information about a Job.
 #[derive(Serialize, Deserialize)]
-pub struct Job {
+pub struct Job<P, S> {
     /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
     pub id: String,
 
@@ -67,10 +78,10 @@ pub struct Job {
     pub retries_remaining: Option<PositiveI16>,
 
     /// The raw payload that the `Job` requires to run.
-    pub payload: Box<RawValue>,
+    pub payload: P,
 
     /// The raw `Job` state stored during enqueue, reschedule or heartbeat while in-flight..
-    pub state: Option<Box<RawValue>>,
+    pub state: Option<S>,
 
     /// Is the current Jobs unique `run_id`. When there is a value here it signifies that the job is
     /// currently in-flight being processed.
