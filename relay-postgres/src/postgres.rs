@@ -7,11 +7,10 @@ use deadpool_postgres::{
 };
 use metrics::{counter, histogram, increment_counter};
 use pg_interval::Interval;
-use relay_core::job::EnqueueMode;
+use relay_core::job::{EnqueueMode, Job, NewJob};
 use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
 use rustls::client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier};
 use rustls::{Certificate, OwnedTrustAnchor, RootCertStore, ServerName};
-use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -31,79 +30,6 @@ const MIGRATIONS: [Migration; 1] = [Migration::new(
     "1697429987001_initialize.sql",
     include_str!("../migrations/1697429987001_initialize.sql"),
 )];
-
-// Is a structure used to enqueue a new Job.
-#[derive(Deserialize)]
-pub struct NewJob {
-    /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
-    pub id: String,
-
-    /// Is used to differentiate different job types that can be picked up by job runners.
-    pub queue: String,
-
-    /// Denotes the duration, in seconds, after a Job has started processing or since the last
-    /// heartbeat request occurred before considering the Job failed and being put back into the
-    /// queue.
-    pub timeout: PositiveI32,
-
-    /// Determines how many times the Job can be retried, due to timeouts, before being considered
-    /// permanently failed. Infinite retries are supported by using a negative number eg. -1
-    pub max_retries: Option<PositiveI16>,
-
-    /// The raw JSON payload that the job runner will receive.
-    pub payload: Box<RawValue>,
-
-    /// The raw JSON payload that the job runner will receive.
-    pub state: Option<Box<RawValue>>,
-
-    /// With this you can optionally schedule/set a Job to be run only at a specific time in the
-    /// future. This option should mainly be used for one-time jobs and scheduled jobs that have
-    /// the option of being self-perpetuated in combination with the reschedule endpoint.
-    pub run_at: Option<DateTime<Utc>>,
-}
-
-/// Job defines all information about a Job.
-#[derive(Serialize)]
-pub struct Job {
-    /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
-    pub id: String,
-
-    /// Is used to differentiate different job types that can be picked up by job runners.
-    pub queue: String,
-
-    /// Denotes the duration, in seconds, after a Job has started processing or since the last
-    /// heartbeat request occurred before considering the Job failed and being put back into the
-    /// queue.
-    pub timeout: PositiveI32,
-
-    /// Determines how many times the Job can be retried, due to timeouts, before being considered
-    /// permanently failed. Infinite retries are supported by using a negative number eg. -1
-    pub max_retries: Option<PositiveI16>,
-
-    /// Specifies how many more times the Job can be retried.
-    pub retries_remaining: Option<PositiveI16>,
-
-    /// The raw payload that the `Job` requires to run.
-    pub payload: Box<RawValue>,
-
-    /// The raw `Job` state stored during enqueue, reschedule or heartbeat while in-flight..
-    pub state: Option<Box<RawValue>>,
-
-    /// Is the current Jobs unique `run_id`. When there is a value here it signifies that the job is
-    /// currently in-flight being processed.
-    pub run_id: Option<Uuid>,
-
-    /// Indicates the time that a `Job` is eligible to be run.
-    pub run_at: DateTime<Utc>,
-
-    /// This indicates the last time the `Job` was updated either through enqueue, reschedule or
-    /// heartbeat.
-    pub updated_at: DateTime<Utc>,
-
-    /// This indicates the time the `Job` was originally created. this value does now change when a
-    /// Job is rescheduled.
-    pub created_at: DateTime<Utc>,
-}
 
 /// Postgres backing store
 pub struct PgStore {
@@ -326,7 +252,7 @@ impl PgStore {
             .await?;
 
         let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
-        let job = row.as_ref().map(std::convert::Into::into);
+        let job = row.as_ref().map(row_to_job);
 
         increment_counter!("get", "queue" => queue.to_owned());
         debug!("got job");
@@ -429,7 +355,7 @@ impl PgStore {
         };
 
         while let Some(row) = stream.next().await {
-            jobs.push((&row?).into());
+            jobs.push(row_to_job(&row?));
         }
 
         if jobs.is_empty() {
@@ -938,39 +864,38 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
     Ok(stmt)
 }
 
-impl From<&Row> for Job {
-    fn from(row: &Row) -> Self {
-        Job {
-            id: row.get(0),
-            queue: row.get(1),
-            timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2)))
-                .unwrap_or_else(|| {
-                    warn!("invalid timeout value, defaulting to 30s");
-                    PositiveI32::new(30).unwrap()
-                }),
-            max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
-                PositiveI16::new(i).unwrap_or_else(|| {
-                    warn!("invalid max_retries value, defaulting to 0");
-                    PositiveI16::new(0).unwrap()
-                })
+fn row_to_job(row: &Row) -> Job {
+    Job {
+        id: row.get(0),
+        queue: row.get(1),
+        timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2))).unwrap_or_else(
+            || {
+                warn!("invalid timeout value, defaulting to 30s");
+                PositiveI32::new(30).unwrap()
+            },
+        ),
+        max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
+            PositiveI16::new(i).unwrap_or_else(|| {
+                warn!("invalid max_retries value, defaulting to 0");
+                PositiveI16::new(0).unwrap()
+            })
+        }),
+        retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
+            PositiveI16::new(i).unwrap_or_else(|| {
+                warn!("invalid max_retries value, defaulting to 0");
+                PositiveI16::new(0).unwrap()
+            })
+        }),
+        payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
+        state: row
+            .get::<usize, Option<Json<Box<RawValue>>>>(6)
+            .map(|state| match state {
+                Json(state) => state,
             }),
-            retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
-                PositiveI16::new(i).unwrap_or_else(|| {
-                    warn!("invalid max_retries value, defaulting to 0");
-                    PositiveI16::new(0).unwrap()
-                })
-            }),
-            payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
-            state: row
-                .get::<usize, Option<Json<Box<RawValue>>>>(6)
-                .map(|state| match state {
-                    Json(state) => state,
-                }),
-            run_id: row.get(7),
-            run_at: Utc.from_utc_datetime(&row.get(8)),
-            updated_at: Utc.from_utc_datetime(&row.get(9)),
-            created_at: Utc.from_utc_datetime(&row.get(10)),
-        }
+        run_id: row.get(7),
+        run_at: Utc.from_utc_datetime(&row.get(8)),
+        updated_at: Utc.from_utc_datetime(&row.get(9)),
+        created_at: Utc.from_utc_datetime(&row.get(10)),
     }
 }
 

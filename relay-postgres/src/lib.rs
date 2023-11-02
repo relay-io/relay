@@ -3,4 +3,4 @@ mod migrations;
 mod postgres;
 
 pub use errors::{Error, Result};
-pub use postgres::{Job, NewJob, PgStore};
+pub use postgres::PgStore;

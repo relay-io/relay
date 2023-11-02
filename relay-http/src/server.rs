@@ -5,10 +5,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, head, patch, post, put};
 use axum::{Json, Router};
 use metrics::increment_counter;
-use relay_core::job::EnqueueMode;
-use relay_core::num::{GtZeroI64, PositiveI32};
-use relay_postgres::{Error as PostgresError, Job, NewJob, PgStore};
-use serde::{Deserialize, Serialize};
+use relay_core::job::{EnqueueMode, NewJob};
+use relay_core::num::GtZeroI64;
+use relay_postgres::{Error as PostgresError, PgStore};
+use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::future::Future;
 use std::sync::Arc;
@@ -370,3 +370,48 @@ impl Server {
             .with_state(backend)
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::client::{Builder as ClientBuilder, Client};
+//     use anyhow::{anyhow, Context};
+//     use chrono::DurationRound;
+//     use chrono::Utc;
+//     use portpicker::pick_unused_port;
+//     use relay_postgres::PgStore;
+//     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+//     use tokio::task::JoinHandle;
+//     use uuid::Uuid;
+//
+//     /// Generates a `SocketAddr` on the IP 0.0.0.0, using a random port.
+//     pub fn new_random_socket_addr() -> anyhow::Result<SocketAddr> {
+//         let ip_address = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+//         let port = pick_unused_port().ok_or_else(|| anyhow!("No free port was found"))?;
+//         let addr = SocketAddr::new(ip_address, port);
+//         Ok(addr)
+//     }
+//
+//     async fn init_server() -> anyhow::Result<(JoinHandle<()>, Arc<Client>)> {
+//         let db_url = std::env::var("DATABASE_URL")?;
+//         let store = Arc::new(PgStore::default(&db_url).await?);
+//         let app = Server::init_app(store);
+//
+//         let socket_address =
+//             new_random_socket_addr().expect("Cannot create socket address for use");
+//         let listener = TcpListener::bind(socket_address)
+//             .with_context(|| "Failed to create TCPListener for TestServer")?;
+//         let server_address = socket_address.to_string();
+//         let server = axum::Server::from_tcp(listener)
+//             .with_context(|| "Failed to create ::axum::Server for TestServer")?
+//             .serve(app.into_make_service());
+//
+//         let server_thread = tokio::spawn(async move {
+//             server.await.expect("Expect server to start serving");
+//         });
+//
+//         let url = format!("http://{server_address}");
+//         let client = ClientBuilder::new(&url).build();
+//         Ok((server_thread, Arc::new(client)))
+//     }
+// }
