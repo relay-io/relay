@@ -372,9 +372,9 @@ impl Client {
         .await
     }
 
-    /// Reschedules an existing in-flight `Job` atomically with the provided `NewJob` information.
+    /// Re-enqueue an existing in-flight `Job` atomically into one or more provided `NewJob`'s.
     ///
-    /// This allows not only rescheduling the `Job` to run again but also allows rescheduling
+    /// This allows not only re-enqueuing the `Job` to run again but also allows rescheduling
     /// it into another queue with a different id. This allows using a `Job` like a distributed
     /// state machine.
     ///
@@ -382,27 +382,29 @@ impl Client {
     ///
     /// Will return `Err` on:
     /// - an unrecoverable network error.
-    /// - if the `Job` doesn't exists.
-    pub async fn reschedule<P, S>(
+    /// - if one of the `Job`'s exists when mode is unique.
+    pub async fn re_enqueue<P, S>(
         &self,
+        mode: EnqueueMode,
         queue: &str,
         job_id: &str,
         run_id: &Uuid,
-        job: &NewJob<P, S>,
+        jobs: &[NewJob<P, S>],
     ) -> Result<()>
     where
         P: Serialize,
         S: Serialize,
     {
         let url = format!(
-            "{}/v1/queues/{}/jobs/{}/run_id/{}",
+            "{}/v1/queues/{}/jobs/{}/run_id/{}?mode={}",
             self.url,
             url_encode(queue),
             url_encode(job_id),
-            run_id
+            run_id,
+            mode
         );
         self.with_retry(|| async {
-            let res = self.client.put(&url).json(job).send().await?;
+            let res = self.client.put(&url).json(jobs).send().await?;
             let status_code = res.status();
 
             if status_code == StatusCode::ACCEPTED {

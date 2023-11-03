@@ -164,20 +164,20 @@ async fn heartbeat(
     }
 }
 
-#[tracing::instrument(name = "http_reschedule", level = "debug", skip_all)]
-async fn reschedule(
+#[tracing::instrument(name = "http_re_enqueue", level = "debug", skip_all)]
+async fn re_enqueue(
     State(state): State<Arc<PgStore>>,
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
     params: Query<EnqueueQueryInfo>,
-    job: Json<NewJob<Box<RawValue>, Box<RawValue>>>,
+    jobs: Json<Vec<NewJob<Box<RawValue>, Box<RawValue>>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone());
+    increment_counter!("http_request", "endpoint" => "re_enqueue");
 
     if let Err(e) = state
-        .reschedule(params.0.enqueue_mode(), &queue, &id, &run_id, &job)
+        .re_enqueue(params.0.enqueue_mode(), &queue, &id, &run_id, jobs.0.iter())
         .await
     {
-        increment_counter!("errors", "endpoint" => "enqueued", "type" => e.error_type(), "queue" => e.queue());
+        increment_counter!("errors", "endpoint" => "re_enqueue", "type" => e.error_type(), "queue" => e.queue());
         match e {
             PostgresError::JobExists { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -326,7 +326,7 @@ impl Server {
     pub(crate) fn init_app(backend: Arc<PgStore>) -> Router {
         Router::new()
             .route("/v1/queues/jobs", post(enqueue))
-            .route("/v1/queues/:queue/jobs/:id/run_id/:run_id", put(reschedule))
+            .route("/v1/queues/:queue/jobs/:id/run_id/:run_id", put(re_enqueue))
             .route("/v1/queues/:queue/jobs", get(next))
             .route("/v1/queues/:queue/jobs/:id", head(exists))
             .route("/v1/queues/:queue/jobs/:id", get(get_job))
@@ -371,47 +371,104 @@ impl Server {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::client::{Builder as ClientBuilder, Client};
-//     use anyhow::{anyhow, Context};
-//     use chrono::DurationRound;
-//     use chrono::Utc;
-//     use portpicker::pick_unused_port;
-//     use relay_postgres::PgStore;
-//     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
-//     use tokio::task::JoinHandle;
-//     use uuid::Uuid;
-//
-//     /// Generates a `SocketAddr` on the IP 0.0.0.0, using a random port.
-//     pub fn new_random_socket_addr() -> anyhow::Result<SocketAddr> {
-//         let ip_address = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
-//         let port = pick_unused_port().ok_or_else(|| anyhow!("No free port was found"))?;
-//         let addr = SocketAddr::new(ip_address, port);
-//         Ok(addr)
-//     }
-//
-//     async fn init_server() -> anyhow::Result<(JoinHandle<()>, Arc<Client>)> {
-//         let db_url = std::env::var("DATABASE_URL")?;
-//         let store = Arc::new(PgStore::default(&db_url).await?);
-//         let app = Server::init_app(store);
-//
-//         let socket_address =
-//             new_random_socket_addr().expect("Cannot create socket address for use");
-//         let listener = TcpListener::bind(socket_address)
-//             .with_context(|| "Failed to create TCPListener for TestServer")?;
-//         let server_address = socket_address.to_string();
-//         let server = axum::Server::from_tcp(listener)
-//             .with_context(|| "Failed to create ::axum::Server for TestServer")?
-//             .serve(app.into_make_service());
-//
-//         let server_thread = tokio::spawn(async move {
-//             server.await.expect("Expect server to start serving");
-//         });
-//
-//         let url = format!("http://{server_address}");
-//         let client = ClientBuilder::new(&url).build();
-//         Ok((server_thread, Arc::new(client)))
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{anyhow, Context};
+    use chrono::DurationRound;
+    use chrono::Utc;
+    use portpicker::pick_unused_port;
+    use relay_client::http::client::{Builder as ClientBuilder, Client};
+    use relay_core::num::PositiveI32;
+    use relay_postgres::PgStore;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+    use tokio::task::JoinHandle;
+    use uuid::Uuid;
+
+    /// Generates a `SocketAddr` on the IP 0.0.0.0, using a random port.
+    pub fn new_random_socket_addr() -> anyhow::Result<SocketAddr> {
+        let ip_address = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+        let port = pick_unused_port().ok_or_else(|| anyhow!("No free port was found"))?;
+        let addr = SocketAddr::new(ip_address, port);
+        Ok(addr)
+    }
+
+    async fn init_server() -> anyhow::Result<(JoinHandle<()>, Arc<Client>)> {
+        let db_url = std::env::var("DATABASE_URL")?;
+        let store = Arc::new(PgStore::default(&db_url).await?);
+        let app = Server::init_app(store);
+
+        let socket_address =
+            new_random_socket_addr().expect("Cannot create socket address for use");
+        let listener = TcpListener::bind(socket_address)
+            .with_context(|| "Failed to create TCPListener for TestServer")?;
+        let server_address = socket_address.to_string();
+        let server = axum::Server::from_tcp(listener)
+            .with_context(|| "Failed to create ::axum::Server for TestServer")?
+            .serve(app.into_make_service());
+
+        let server_thread = tokio::spawn(async move {
+            server.await.expect("Expect server to start serving");
+        });
+
+        let url = format!("http://{server_address}");
+        let client = ClientBuilder::new(&url).build();
+        Ok((server_thread, Arc::new(client)))
+    }
+
+    #[tokio::test]
+    async fn test_oneshot_job() -> anyhow::Result<()> {
+        let (_srv, client) = init_server().await?;
+        let now = Utc::now()
+            .duration_trunc(chrono::Duration::milliseconds(1))
+            .unwrap();
+        let job: NewJob<(), i32> = NewJob {
+            id: Uuid::new_v4().to_string(),
+            queue: Uuid::new_v4().to_string(),
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: None,
+            payload: (),
+            state: None,
+            run_at: Some(now),
+        };
+        let jobs = vec![job];
+
+        client.enqueue(EnqueueMode::Unique, &jobs).await?;
+
+        let exists = client
+            .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .await?;
+        assert!(exists);
+
+        let mut j = client
+            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .await?;
+        assert!(j.updated_at >= now);
+        assert_eq!(&jobs.get(0).unwrap().id, j.id.as_str());
+        assert_eq!(&jobs.get(0).unwrap().queue, j.queue.as_str());
+        assert_eq!(&jobs.get(0).unwrap().timeout, &j.timeout);
+
+        let mut jobs = client
+            .poll::<(), i32>(&jobs.get(0).unwrap().queue, 10)
+            .await?;
+        assert_eq!(jobs.len(), 1);
+
+        let j2 = jobs.pop().unwrap();
+        j.updated_at = j2.updated_at;
+        j.run_id = j2.run_id;
+        assert_eq!(j2, j);
+        assert!(j2.run_id.is_some());
+
+        client
+            .heartbeat(&j2.queue, &j2.id, &j2.run_id.unwrap(), Some(3))
+            .await?;
+
+        let j = client.get::<(), i32>(&j2.queue, &j2.id).await?;
+        assert_eq!(j.state, Some(3));
+
+        client
+            .complete(&j2.queue, &j2.id, &j2.run_id.unwrap())
+            .await?;
+        Ok(())
+    }
+}

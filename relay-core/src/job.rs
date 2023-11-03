@@ -27,7 +27,7 @@ impl Display for EnqueueMode {
 }
 
 // Is a structure used to enqueue a new Job.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct NewJob<P, S> {
     /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
     pub id: String,
@@ -57,7 +57,7 @@ pub struct NewJob<P, S> {
 }
 
 /// Job defines all information about a Job.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Job<P, S> {
     /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
     pub id: String,

@@ -5,6 +5,6 @@
 mod client;
 mod errors;
 
+pub use client::{Builder, Client};
 pub use errors::{Error, Result};
-// pub use client::{Builder, Client};
 // pub use consumer::{Builder as ConsumerBuilder, Consumer};

@@ -1,6 +1,6 @@
 use crate::errors::{Error, Result};
 use crate::migrations::{run_migrations, Migration};
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{TimeZone, Utc};
 use deadpool_postgres::{
     ClientWrapper, GenericClient, Hook, HookError, Manager, ManagerConfig, Pool, PoolError,
     RecyclingMethod, Transaction,
@@ -151,22 +151,16 @@ impl PgStore {
 
     // TODO: Update doc comments for existing before continuing.
 
-    /// Creates a batch of Jobs to be processed in a single write transaction following the rules
-    /// indicated by provided `EnqueueMode`.
-    ///
-    /// # Errors
-    ///
-    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
-    #[tracing::instrument(name = "pg_enqueue", level = "debug", skip_all, fields(mode))]
-    pub async fn enqueue(
+    #[inline]
+    async fn enqueue_internal<'a>(
         &self,
+        transaction: &Transaction<'_>,
         mode: EnqueueMode,
-        jobs: impl Iterator<Item = &NewJob<Box<RawValue>, Box<RawValue>>>,
-    ) -> Result<()> {
-        let mut client = self.pool.get().await?;
-        let transaction = client.transaction().await?;
+        jobs: impl Iterator<Item = &'a NewJob<Box<RawValue>, Box<RawValue>>>,
+    ) -> Result<HashMap<&'a String, u64>> {
+        let mut counts: HashMap<&String, u64> = HashMap::new();
+
         let stmt = enqueue_stmt(mode, &transaction).await?;
-        let mut counts = HashMap::new();
 
         for job in jobs {
             let now = Utc::now().naive_utc();
@@ -211,7 +205,24 @@ impl PgStore {
                 }
             };
         }
+        Ok(counts)
+    }
 
+    /// Creates a batch of Jobs to be processed in a single write transaction following the rules
+    /// indicated by provided `EnqueueMode`.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
+    #[tracing::instrument(name = "pg_enqueue", level = "debug", skip_all, fields(mode))]
+    pub async fn enqueue(
+        &self,
+        mode: EnqueueMode,
+        jobs: impl Iterator<Item = &NewJob<Box<RawValue>, Box<RawValue>>>,
+    ) -> Result<()> {
+        let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
+        let counts = self.enqueue_internal(&transaction, mode, jobs).await?;
         transaction.commit().await?;
 
         for (queue, count) in counts {
@@ -483,72 +494,26 @@ impl PgStore {
     /// # Errors
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
-    #[tracing::instrument(name = "pg_reschedule", level = "debug", skip_all, fields(job_id=%job.id, queue=%job.queue))]
-    pub async fn reschedule(
+    #[tracing::instrument(
+        name = "pg_re_enqueue",
+        level = "debug",
+        skip_all,
+        fields(job_id, queue, mode)
+    )]
+    pub async fn re_enqueue(
         &self,
         mode: EnqueueMode,
         queue: &str,
         job_id: &str,
         run_id: &Uuid,
-        job: &NewJob<Box<RawValue>, Box<RawValue>>,
+        jobs: impl Iterator<Item = &NewJob<Box<RawValue>, Box<RawValue>>>,
     ) -> Result<()> {
-        let now = Utc::now().naive_utc();
-        let run_at = if let Some(run_at) = job.run_at {
-            run_at.naive_utc()
-        } else {
-            now
-        };
-
         let mut client = self.pool.get().await?;
+        let transaction = client.transaction().await?;
 
-        let previous_run_at: Option<DateTime<Utc>> = if queue == job.queue && job_id == job.id {
-            let stmt = client
-                .prepare_cached(
-                    r#"
-                UPDATE jobs
-                SET
-                    timeout = $3,
-                    max_retries = $4,
-                    retries_remaining = $4,
-                    data = $5,
-                    state = $6,
-                    updated_at = $7,
-                    run_at = $8,
-                    in_flight = false,
-                    run_id = NULL
-                WHERE
-                    queue=$1 AND
-                    id=$2 AND
-                    in_flight=true AND
-                    run_id=$9
-                RETURNING (SELECT run_at FROM jobs WHERE queue=$1 AND id=$2 AND in_flight=true)
-                "#,
-                )
-                .await?;
-            client
-                .query_opt(
-                    &stmt,
-                    &[
-                        &job.queue,
-                        &job.id,
-                        &Interval::from_duration(chrono::Duration::seconds(i64::from(
-                            job.timeout.get(),
-                        ))),
-                        &job.max_retries.as_ref().map(|r| Some(r.get())),
-                        &Json(&job.payload),
-                        &job.state.as_ref().map(|state| Some(Json(state))),
-                        &now,
-                        &run_at,
-                        &run_id,
-                    ],
-                )
-                .await?
-                .map(|row| Utc.from_utc_datetime(&row.get(0)))
-        } else {
-            let transaction = client.transaction().await?;
-            let delete_stmt = transaction
-                .prepare_cached(
-                    r#"
+        let delete_stmt = transaction
+            .prepare_cached(
+                r#"
                 DELETE FROM jobs
                 WHERE
                     queue=$1 AND
@@ -557,57 +522,28 @@ impl PgStore {
                     run_id=$3
                 RETURNING run_at
             "#,
-                )
-                .await?;
+            )
+            .await?;
 
-            let previous_run_at = transaction
-                .query_opt(&delete_stmt, &[&queue, &job_id, &run_id])
-                .await?
-                .map(|row| Utc.from_utc_datetime(&row.get(0)));
+        let previous_run_at = transaction
+            .query_opt(&delete_stmt, &[&queue, &job_id, &run_id])
+            .await?
+            .map(|row| Utc.from_utc_datetime(&row.get(0)));
 
-            // only if row exists should we try the insert
-            if previous_run_at.is_some() {
-                let stmt = enqueue_stmt(mode, &transaction).await?;
-
-                transaction
-                    .execute(
-                        &stmt,
-                        &[
-                            &job.id,
-                            &job.queue,
-                            &Interval::from_duration(chrono::Duration::seconds(i64::from(
-                                job.timeout.get(),
-                            ))),
-                            &job.max_retries.as_ref().map(|r| Some(r.get())),
-                            &Json(&job.payload),
-                            &job.state.as_ref().map(|state| Some(Json(state))),
-                            &run_at,
-                            &now,
-                        ],
-                    )
-                    .await
-                    .map_err(|e| {
-                        if let Some(&SqlState::UNIQUE_VIOLATION) = e.code() {
-                            Error::JobExists {
-                                job_id: job.id.to_string(),
-                                queue: job.queue.to_string(),
-                            }
-                        } else {
-                            e.into()
-                        }
-                    })?;
+        // only if row exists should we try the insert
+        if previous_run_at.is_some() {
+            let counts = self.enqueue_internal(&transaction, mode, jobs).await?;
+            for (queue, count) in counts {
+                counter!("re_enqueued", count, "queue" => queue.to_string());
             }
-            transaction.commit().await?;
-            previous_run_at
-        };
+        }
+        transaction.commit().await?;
 
         if let Some(run_at) = previous_run_at {
-            increment_counter!("rescheduled", "queue" => job.queue.to_string());
-
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => job.queue.to_string(), "type" => "rescheduled");
+                histogram!("duration", d, "queue" => queue.to_string(), "type" => "re_enqueued");
             }
-            debug!("rescheduled job");
+            debug!("re_enqueued jobs");
         }
         Ok(())
     }
@@ -1079,12 +1015,12 @@ mod tests {
         let next = &next.unwrap()[0];
 
         let result = store
-            .reschedule(
+            .re_enqueue(
                 EnqueueMode::Unique,
                 &next.queue,
                 &next.id,
                 &next.run_id.unwrap(),
-                &reschedule,
+                vec![&reschedule].into_iter(),
             )
             .await;
         assert_eq!(
@@ -1098,12 +1034,12 @@ mod tests {
 
         // test job was deleted even though existing job existed
         store
-            .reschedule(
+            .re_enqueue(
                 EnqueueMode::Replace,
                 &queue2,
                 &job_id2,
                 &next.run_id.unwrap(),
-                &reschedule,
+                vec![&reschedule].into_iter(),
             )
             .await?;
         assert!(!store.exists(&queue2, &job_id2).await?);
@@ -1175,12 +1111,12 @@ mod tests {
         let next = &next.unwrap()[0];
 
         let result = store
-            .reschedule(
+            .re_enqueue(
                 EnqueueMode::Unique,
                 &next.queue,
                 &next.id,
                 &next.run_id.unwrap(),
-                &reschedule,
+                vec![&reschedule].into_iter(),
             )
             .await;
         assert_eq!(
@@ -1194,12 +1130,12 @@ mod tests {
 
         // test job was deleted even though existing job existed
         store
-            .reschedule(
+            .re_enqueue(
                 EnqueueMode::Ignore,
                 &queue2,
                 &job_id2,
                 &next.run_id.unwrap(),
-                &reschedule,
+                [reschedule].iter(),
             )
             .await?;
         assert!(!store.exists(&queue2, &job_id2).await?);
@@ -1256,12 +1192,12 @@ mod tests {
         assert_eq!(1, next.as_ref().unwrap().len());
         let next = &next.unwrap()[0];
         let result = store
-            .reschedule(
+            .re_enqueue(
                 EnqueueMode::Unique,
                 &queue2,
                 &job_id2,
                 &next.run_id.unwrap(),
-                &reschedule,
+                [reschedule].iter(),
             )
             .await;
         assert_eq!(
@@ -1311,12 +1247,12 @@ mod tests {
             run_at: Some(now),
         };
         store
-            .reschedule(
+            .re_enqueue(
                 EnqueueMode::Unique,
                 &reschedule.queue,
                 &reschedule.id,
                 &next.run_id.unwrap(),
-                &reschedule,
+                vec![&reschedule].into_iter(),
             )
             .await?;
 
@@ -1336,12 +1272,12 @@ mod tests {
         // tests that can't reschedule a job no longer in flight anymore
         reschedule.payload = payload;
         store
-            .reschedule(
+            .re_enqueue(
                 EnqueueMode::Unique,
                 &reschedule.queue,
                 &reschedule.id,
                 &next.run_id.unwrap(),
-                &reschedule,
+                vec![&reschedule].into_iter(),
             )
             .await?;
         let result = store.get(&reschedule.queue, &reschedule.id).await?;
@@ -1354,12 +1290,12 @@ mod tests {
 
         // ensures no error rescheduling when no Job exists
         store
-            .reschedule(
+            .re_enqueue(
                 EnqueueMode::Unique,
                 &reschedule.queue,
-                &reschedule.id,
+                &reschedule.id.clone(),
                 &next.run_id.unwrap(),
-                &reschedule,
+                vec![&reschedule].into_iter(),
             )
             .await?;
         Ok(())
