@@ -26,10 +26,16 @@ use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-const MIGRATIONS: [Migration; 1] = [Migration::new(
-    "1697429987001_initialize.sql",
-    include_str!("../migrations/1697429987001_initialize.sql"),
-)];
+const MIGRATIONS: [Migration; 2] = [
+    Migration::new(
+        "1678464484380_initialize.sql",
+        include_str!("../migrations/1678464484380_initialize.sql"),
+    ),
+    Migration::new(
+        "1697429987001_v2.sql",
+        include_str!("../migrations/1697429987001_v2.sql"),
+    ),
+];
 
 /// Postgres backing store
 pub struct PgStore {
