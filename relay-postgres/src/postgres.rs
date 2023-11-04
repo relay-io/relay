@@ -529,11 +529,15 @@ impl PgStore {
         // only if row exists should we try the insert
         if previous_run_at.is_some() {
             let counts = self.enqueue_internal(&transaction, mode, jobs).await?;
+
+            transaction.commit().await?;
+
             for (queue, count) in counts {
                 counter!("re_enqueued", count, "queue" => queue.to_string());
             }
+        } else {
+            transaction.commit().await?;
         }
-        transaction.commit().await?;
 
         if let Some(run_at) = previous_run_at {
             if let Ok(d) = (Utc::now() - run_at).to_std() {
