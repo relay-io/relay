@@ -2,7 +2,7 @@ use super::errors::Result;
 use crate::http::client::Error;
 use backoff_rs::{Exponential, ExponentialBackoffBuilder};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use relay_core::job::{EnqueueMode, Job, NewJob};
+use relay_core::job::{EnqueueMode, Job, New};
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -23,6 +23,10 @@ pub struct Builder {
 
 impl Builder {
     /// Initializes a new Builder with sane defaults to create a custom `Client`
+    ///
+    /// # Panics
+    ///
+    /// If internal configuration of the `reqwest::Client` is invalid.
     #[must_use]
     pub fn new(url: &str) -> Self {
         let next_backoff = ExponentialBackoffBuilder::default()
@@ -117,7 +121,7 @@ impl Client {
     /// # Errors
     ///
     /// Will return `Err` on an unrecoverable network error.
-    pub async fn enqueue<P, S>(&self, mode: EnqueueMode, jobs: &[NewJob<P, S>]) -> Result<()>
+    pub async fn enqueue<P, S>(&self, mode: EnqueueMode, jobs: &[New<P, S>]) -> Result<()>
     where
         P: Serialize,
         S: Serialize,
@@ -389,7 +393,7 @@ impl Client {
         queue: &str,
         job_id: &str,
         run_id: &Uuid,
-        jobs: &[NewJob<P, S>],
+        jobs: &[New<P, S>],
     ) -> Result<()>
     where
         P: Serialize,
@@ -468,6 +472,6 @@ impl Client {
 }
 
 #[inline]
-fn url_encode<'a>(input: &'a str) -> Cow<'a, str> {
+fn url_encode(input: &str) -> Cow<str> {
     utf8_percent_encode(input, NON_ALPHANUMERIC).into()
 }

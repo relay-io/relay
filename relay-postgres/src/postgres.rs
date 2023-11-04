@@ -7,7 +7,7 @@ use deadpool_postgres::{
 };
 use metrics::{counter, histogram, increment_counter};
 use pg_interval::Interval;
-use relay_core::job::{EnqueueMode, Job, NewJob};
+use relay_core::job::{EnqueueMode, Job as RelayJob, New as RelayNew};
 use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
 use rustls::client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier};
 use rustls::{Certificate, OwnedTrustAnchor, RootCertStore, ServerName};
@@ -25,6 +25,9 @@ use tokio_postgres::{Config as PostgresConfig, Row, Statement};
 use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, warn};
 use uuid::Uuid;
+
+type Job = RelayJob<Box<RawValue>, Box<RawValue>>;
+type New = RelayNew<Box<RawValue>, Box<RawValue>>;
 
 const MIGRATIONS: [Migration; 2] = [
     Migration::new(
@@ -162,11 +165,11 @@ impl PgStore {
         &self,
         transaction: &Transaction<'_>,
         mode: EnqueueMode,
-        jobs: impl Iterator<Item = &'a NewJob<Box<RawValue>, Box<RawValue>>>,
+        jobs: impl Iterator<Item = &'a New>,
     ) -> Result<HashMap<&'a String, u64>> {
         let mut counts: HashMap<&String, u64> = HashMap::new();
 
-        let stmt = enqueue_stmt(mode, &transaction).await?;
+        let stmt = enqueue_stmt(mode, transaction).await?;
 
         for job in jobs {
             let now = Utc::now().naive_utc();
@@ -221,11 +224,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_enqueue", level = "debug", skip_all, fields(mode))]
-    pub async fn enqueue(
-        &self,
-        mode: EnqueueMode,
-        jobs: impl Iterator<Item = &NewJob<Box<RawValue>, Box<RawValue>>>,
-    ) -> Result<()> {
+    pub async fn enqueue(&self, mode: EnqueueMode, jobs: impl Iterator<Item = &New>) -> Result<()> {
         let mut client = self.pool.get().await?;
         let transaction = client.transaction().await?;
         let counts = self.enqueue_internal(&transaction, mode, jobs).await?;
@@ -244,11 +243,7 @@ impl PgStore {
     /// # Errors
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
-    pub async fn get(
-        &self,
-        queue: &str,
-        job_id: &str,
-    ) -> Result<Option<Job<Box<RawValue>, Box<RawValue>>>> {
+    pub async fn get(&self, queue: &str, job_id: &str) -> Result<Option<Job>> {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
@@ -313,11 +308,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_next", level = "debug", skip_all, fields(num_jobs=num_jobs.get(), queue=%queue))]
-    pub async fn next(
-        &self,
-        queue: &str,
-        num_jobs: GtZeroI64,
-    ) -> Result<Option<Vec<Job<Box<RawValue>, Box<RawValue>>>>> {
+    pub async fn next(&self, queue: &str, num_jobs: GtZeroI64) -> Result<Option<Vec<Job>>> {
         let client = self.pool.get().await?;
 
         // MUST USE CTE WITH `FOR UPDATE SKIP LOCKED LIMIT` otherwise the Postgres Query Planner
@@ -373,12 +364,11 @@ impl PgStore {
         // on purpose NOT using num_jobs as the capacity to avoid the potential attack vector of
         // someone exhausting all memory by sending a large number even if there aren't that many
         // records in the database.
-        let mut jobs: Vec<Job<Box<RawValue>, Box<RawValue>>> =
-            if let Some(size) = stream.size_hint().1 {
-                Vec::with_capacity(size)
-            } else {
-                Vec::new()
-            };
+        let mut jobs: Vec<Job> = if let Some(size) = stream.size_hint().1 {
+            Vec::with_capacity(size)
+        } else {
+            Vec::new()
+        };
 
         while let Some(row) = stream.next().await {
             jobs.push(row_to_job(&row?));
@@ -512,7 +502,7 @@ impl PgStore {
         queue: &str,
         job_id: &str,
         run_id: &Uuid,
-        jobs: impl Iterator<Item = &NewJob<Box<RawValue>, Box<RawValue>>>,
+        jobs: impl Iterator<Item = &New>,
     ) -> Result<()> {
         let mut client = self.pool.get().await?;
         let transaction = client.transaction().await?;
@@ -815,7 +805,7 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
     Ok(stmt)
 }
 
-fn row_to_job(row: &Row) -> Job<Box<RawValue>, Box<RawValue>> {
+fn row_to_job(row: &Row) -> Job {
     Job {
         id: row.get(0),
         queue: row.get(1),
@@ -981,7 +971,7 @@ mod tests {
         let queue2 = Uuid::new_v4().to_string();
         let payload1 = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
-        let job1 = NewJob {
+        let job1 = New {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -990,7 +980,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let job2 = NewJob {
+        let job2 = New {
             id: job_id2.clone(),
             queue: queue2.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -999,7 +989,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let reschedule = NewJob {
+        let reschedule = New {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1077,7 +1067,7 @@ mod tests {
         let queue2 = Uuid::new_v4().to_string();
         let payload1 = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
-        let job1 = NewJob {
+        let job1 = New {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1086,7 +1076,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let job2 = NewJob {
+        let job2 = New {
             id: job_id2.clone(),
             queue: queue2.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1095,7 +1085,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let reschedule = NewJob {
+        let reschedule = New {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1159,7 +1149,7 @@ mod tests {
         let queue2 = Uuid::new_v4().to_string();
         let payload1 = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
-        let job1 = NewJob {
+        let job1 = New {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1168,7 +1158,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let job2 = NewJob {
+        let job2 = New {
             id: job_id2.clone(),
             queue: queue2.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1177,7 +1167,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let reschedule = NewJob {
+        let reschedule = New {
             id: job_id1.clone(),
             queue: queue1.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1224,7 +1214,7 @@ mod tests {
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
-        let job = NewJob {
+        let job = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1243,7 +1233,7 @@ mod tests {
         let next = &next.unwrap()[0];
 
         let now = Utc::now().duration_trunc(chrono::Duration::milliseconds(100))?;
-        let mut reschedule = NewJob {
+        let mut reschedule = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(31).unwrap(),
@@ -1315,7 +1305,7 @@ mod tests {
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
-        let job1 = NewJob {
+        let job1 = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1324,7 +1314,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let job2 = NewJob {
+        let job2 = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(31).unwrap(),
@@ -1365,7 +1355,7 @@ mod tests {
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
-        let job1 = NewJob {
+        let job1 = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1374,7 +1364,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let job2 = NewJob {
+        let job2 = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(31).unwrap(),
@@ -1415,7 +1405,7 @@ mod tests {
         let job_id = Uuid::new_v4().to_string();
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
-        let job1 = NewJob {
+        let job1 = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1424,7 +1414,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let job2 = NewJob {
+        let job2 = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(31).unwrap(),
@@ -1454,7 +1444,7 @@ mod tests {
         let job_id = Uuid::new_v4().to_string();
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
-        let job1 = NewJob {
+        let job1 = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1463,7 +1453,7 @@ mod tests {
             state: None,
             run_at: None,
         };
-        let job2 = NewJob {
+        let job2 = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1523,7 +1513,7 @@ mod tests {
         let store = PgStore::default(&db_url).await?;
         let job_id = Uuid::new_v4().to_string();
         let queue = Uuid::new_v4().to_string();
-        let job = NewJob {
+        let job = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1556,7 +1546,7 @@ mod tests {
         let job_id = Uuid::new_v4().to_string();
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
-        let job = NewJob {
+        let job = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1598,7 +1588,7 @@ mod tests {
         let job_id = Uuid::new_v4().to_string();
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
-        let job = NewJob {
+        let job = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(30).unwrap(),
@@ -1660,7 +1650,7 @@ mod tests {
         let job_id = Uuid::new_v4().to_string();
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
-        let job_no_retries_immediate_timeout = NewJob {
+        let job_no_retries_immediate_timeout = New {
             id: job_id.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(0).unwrap(),
@@ -1670,7 +1660,7 @@ mod tests {
             run_at: None,
         };
         let job_id2 = Uuid::new_v4().to_string();
-        let job_retries_remaining_minus_one = NewJob {
+        let job_retries_remaining_minus_one = New {
             id: job_id2.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(0).unwrap(),
@@ -1680,7 +1670,7 @@ mod tests {
             run_at: None,
         };
         let job_id3 = Uuid::new_v4().to_string();
-        let job_retries_forever = NewJob {
+        let job_retries_forever = New {
             id: job_id3.clone(),
             queue: queue.clone(),
             timeout: PositiveI32::new(0).unwrap(),
