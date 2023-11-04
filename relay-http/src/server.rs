@@ -325,18 +325,18 @@ impl Server {
 
     pub(crate) fn init_app(backend: Arc<PgStore>) -> Router {
         Router::new()
-            .route("/v1/queues/jobs", post(enqueue))
-            .route("/v1/queues/:queue/jobs/:id/run_id/:run_id", put(re_enqueue))
-            .route("/v1/queues/:queue/jobs", get(next))
-            .route("/v1/queues/:queue/jobs/:id", head(exists))
-            .route("/v1/queues/:queue/jobs/:id", get(get_job))
+            .route("/v2/queues/jobs", post(enqueue))
+            .route("/v2/queues/:queue/jobs/:id/run_id/:run_id", put(re_enqueue))
+            .route("/v2/queues/:queue/jobs", get(next))
+            .route("/v2/queues/:queue/jobs/:id", head(exists))
+            .route("/v2/queues/:queue/jobs/:id", get(get_job))
             .route(
-                "/v1/queues/:queue/jobs/:id/run_id/:run_id",
+                "/v2/queues/:queue/jobs/:id/run_id/:run_id",
                 patch(heartbeat),
             )
-            .route("/v1/queues/:queue/jobs/:id", delete(delete_job))
+            .route("/v2/queues/:queue/jobs/:id", delete(delete_job))
             .route(
-                "/v1/queues/:queue/jobs/:id/run_id/:run_id",
+                "/v2/queues/:queue/jobs/:id/run_id/:run_id",
                 delete(complete_job),
             )
             .route("/health", get(health))

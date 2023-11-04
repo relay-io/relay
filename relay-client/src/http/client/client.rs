@@ -122,7 +122,7 @@ impl Client {
         P: Serialize,
         S: Serialize,
     {
-        let url = format!("{}/v1/queues/jobs?mode={}", self.url, mode);
+        let url = format!("{}/v2/queues/jobs?mode={}", self.url, mode);
 
         self.with_retry(|| async {
             let res = self.client.post(&url).json(jobs).send().await?;
@@ -151,7 +151,7 @@ impl Client {
     /// - an unrecoverable network error.
     pub async fn delete(&self, queue: &str, job_id: &str) -> Result<()> {
         let url = format!(
-            "{}/v1/queues/{}/jobs/{}",
+            "{}/v2/queues/{}/jobs/{}",
             self.url,
             url_encode(queue),
             url_encode(job_id)
@@ -185,7 +185,7 @@ impl Client {
     /// - The `Job` doesn't exist.
     pub async fn complete(&self, queue: &str, job_id: &str, run_id: &Uuid) -> Result<()> {
         let url = format!(
-            "{}/v1/queues/{}/jobs/{}/run_id/{}",
+            "{}/v2/queues/{}/jobs/{}/run_id/{}",
             self.url,
             url_encode(queue),
             url_encode(job_id),
@@ -218,7 +218,7 @@ impl Client {
     /// Will return `Err` on an unrecoverable network error.
     pub async fn exists(&self, queue: &str, job_id: &str) -> Result<bool> {
         let url = format!(
-            "{}/v1/queues/{}/jobs/{}",
+            "{}/v2/queues/{}/jobs/{}",
             self.url,
             url_encode(queue),
             url_encode(job_id)
@@ -257,7 +257,7 @@ impl Client {
         S: DeserializeOwned,
     {
         let url = format!(
-            "{}/v1/queues/{}/jobs/{}",
+            "{}/v2/queues/{}/jobs/{}",
             self.url,
             url_encode(queue),
             url_encode(job_id)
@@ -295,7 +295,7 @@ impl Client {
         S: DeserializeOwned,
     {
         let queue = url_encode(queue);
-        let url = format!("{}/v1/queues/{queue}/jobs?num_jobs={num_jobs}", self.url);
+        let url = format!("{}/v2/queues/{queue}/jobs?num_jobs={num_jobs}", self.url);
 
         self.with_retry(|| async {
             let res = self.client.get(&url).send().await?;
@@ -341,7 +341,7 @@ impl Client {
         S: Serialize,
     {
         let url = format!(
-            "{}/v1/queues/{}/jobs/{}/run_id/{}",
+            "{}/v2/queues/{}/jobs/{}/run_id/{}",
             self.url,
             url_encode(queue),
             url_encode(job_id),
@@ -396,7 +396,7 @@ impl Client {
         S: Serialize,
     {
         let url = format!(
-            "{}/v1/queues/{}/jobs/{}/run_id/{}?mode={}",
+            "{}/v2/queues/{}/jobs/{}/run_id/{}?mode={}",
             self.url,
             url_encode(queue),
             url_encode(job_id),
