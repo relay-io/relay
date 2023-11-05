@@ -65,67 +65,8 @@ async fn enqueue_v2(
     }
 }
 
-#[tracing::instrument(name = "http_enqueue_v1", level = "debug", skip_all)]
-async fn enqueue_v1(
-    State(state): State<Arc<PgStore>>,
-    jobs: Json<Vec<OldV1<Box<RawValue>, Box<RawValue>>>>,
-) -> Response {
-    increment_counter!("http_request", "endpoint" => "enqueue", "version" => "v1");
-
-    let mode = if jobs.len() == 1 {
-        EnqueueMode::Unique
-    } else {
-        EnqueueMode::Ignore
-    };
-    let jobs = jobs
-        .0
-        .into_iter()
-        .map(|j| New {
-            id: j.id,
-            queue: j.queue,
-            timeout: PositiveI32::new(j.timeout).unwrap_or_else(|| PositiveI32::new(0).unwrap()),
-            max_retries: if j.max_retries < 0 {
-                None
-            } else if j.max_retries > i32::from(i16::MAX) {
-                Some(PositiveI16::new(i16::MAX).unwrap())
-            } else if j.max_retries < i32::from(i16::MIN) {
-                None
-            } else {
-                Some(
-                    PositiveI16::new(i16::try_from(j.max_retries).unwrap())
-                        .unwrap_or_else(|| PositiveI16::new(0).unwrap()),
-                )
-            },
-            payload: j.payload,
-            state: j.state,
-            run_at: j.run_at,
-        })
-        .collect::<Vec<_>>();
-
-    if let Err(e) = state.enqueue(mode, jobs.iter()).await {
-        increment_counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2");
-        match e {
-            PostgresError::Backend { .. } => {
-                if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
-                } else {
-                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
-                }
-            }
-            PostgresError::JobExists { .. } => {
-                (StatusCode::CONFLICT, e.to_string()).into_response()
-            }
-            PostgresError::JobNotFound { .. } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            }
-        }
-    } else {
-        StatusCode::ACCEPTED.into_response()
-    }
-}
-
 #[tracing::instrument(name = "http_get_v2", level = "debug", skip_all)]
-async fn get_job(
+async fn get_job_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
@@ -156,7 +97,7 @@ async fn get_job(
 }
 
 #[tracing::instrument(name = "http_exists_v2", level = "debug", skip_all)]
-async fn exists(
+async fn exists_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
@@ -187,7 +128,7 @@ async fn exists(
 }
 
 #[tracing::instrument(name = "http_heartbeat_v2", level = "debug", skip_all)]
-async fn heartbeat(
+async fn heartbeat_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
     job_state: Option<Json<Box<RawValue>>>,
@@ -258,7 +199,7 @@ async fn re_enqueue(
 }
 
 #[tracing::instrument(name = "http_delete_v2", level = "debug", skip_all)]
-async fn delete_job(
+async fn delete_job_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
@@ -326,7 +267,7 @@ fn default_num_jobs() -> GtZeroI64 {
 }
 
 #[tracing::instrument(name = "http_next_v2", level = "debug", skip_all)]
-async fn next(
+async fn next_v2(
     State(state): State<Arc<PgStore>>,
     Path(queue): Path<String>,
     params: Query<NextQueryInfo>,
@@ -355,6 +296,299 @@ async fn next(
 
 #[allow(clippy::unused_async)]
 async fn health() {}
+
+#[tracing::instrument(name = "http_enqueue_v1", level = "debug", skip_all)]
+async fn enqueue_v1(
+    State(state): State<Arc<PgStore>>,
+    jobs: Json<Vec<OldV1<Box<RawValue>, Box<RawValue>>>>,
+) -> Response {
+    increment_counter!("http_request", "endpoint" => "enqueue", "version" => "v1");
+
+    let mode = if jobs.len() == 1 {
+        EnqueueMode::Unique
+    } else {
+        EnqueueMode::Ignore
+    };
+    let jobs = jobs
+        .0
+        .into_iter()
+        .map(|j| New {
+            id: j.id,
+            queue: j.queue,
+            timeout: PositiveI32::new(j.timeout).unwrap_or_else(|| PositiveI32::new(0).unwrap()),
+            max_retries: if j.max_retries < 0 {
+                None
+            } else if j.max_retries > i32::from(i16::MAX) {
+                Some(PositiveI16::new(i16::MAX).unwrap())
+            } else if j.max_retries < i32::from(i16::MIN) {
+                None
+            } else {
+                Some(
+                    PositiveI16::new(i16::try_from(j.max_retries).unwrap())
+                        .unwrap_or_else(|| PositiveI16::new(0).unwrap()),
+                )
+            },
+            payload: j.payload,
+            state: j.state,
+            run_at: j.run_at,
+        })
+        .collect::<Vec<_>>();
+
+    if let Err(e) = state.enqueue(mode, jobs.iter()).await {
+        increment_counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2");
+        match e {
+            PostgresError::Backend { .. } => {
+                if e.is_retryable() {
+                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                } else {
+                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
+                }
+            }
+            PostgresError::JobExists { .. } => {
+                (StatusCode::CONFLICT, e.to_string()).into_response()
+            }
+            PostgresError::JobNotFound { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            }
+        }
+    } else {
+        StatusCode::ACCEPTED.into_response()
+    }
+}
+
+#[tracing::instrument(name = "http_reschedule_v1", level = "debug", skip_all)]
+async fn reschedule_v1(
+    State(state): State<Arc<PgStore>>,
+    job: Json<OldV1<Box<RawValue>, Box<RawValue>>>,
+) -> Response {
+    increment_counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone(), "version" => "v1");
+
+    // need to get run_id for new requeue logic.
+    let run_id = match state.get(&job.0.queue, &job.0.id).await {
+        Ok(Some(job)) if job.run_id.is_some() => job.run_id.unwrap(),
+        _ => return StatusCode::ACCEPTED.into_response(),
+    };
+
+    let j = job.0;
+    let job = New {
+        id: j.id,
+        queue: j.queue,
+        timeout: PositiveI32::new(j.timeout).unwrap_or_else(|| PositiveI32::new(0).unwrap()),
+        max_retries: if j.max_retries < 0 {
+            None
+        } else if j.max_retries > i32::from(i16::MAX) {
+            Some(PositiveI16::new(i16::MAX).unwrap())
+        } else if j.max_retries < i32::from(i16::MIN) {
+            None
+        } else {
+            Some(
+                PositiveI16::new(i16::try_from(j.max_retries).unwrap())
+                    .unwrap_or_else(|| PositiveI16::new(0).unwrap()),
+            )
+        },
+        payload: j.payload,
+        state: j.state,
+        run_at: j.run_at,
+    };
+
+    if let Err(e) = state
+        .requeue(
+            EnqueueMode::Replace,
+            &job.queue,
+            &job.id,
+            &run_id,
+            [&job].into_iter(),
+        )
+        .await
+    {
+        increment_counter!("errors", "endpoint" => "enqueued", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+        match e {
+            PostgresError::JobExists { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            }
+            PostgresError::Backend { .. } => {
+                if e.is_retryable() {
+                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                } else {
+                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
+                }
+            }
+            PostgresError::JobNotFound { .. } => {
+                (StatusCode::NOT_FOUND, e.to_string()).into_response()
+            }
+        }
+    } else {
+        StatusCode::ACCEPTED.into_response()
+    }
+}
+
+#[tracing::instrument(name = "http_delete_v1", level = "debug", skip_all)]
+async fn delete_job_v1(
+    State(state): State<Arc<PgStore>>,
+    Path((queue, id)): Path<(String, String)>,
+) -> Response {
+    increment_counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v1");
+
+    if let Err(e) = state.delete(&queue, &id).await {
+        increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+        match e {
+            PostgresError::JobNotFound { .. } => {
+                (StatusCode::NOT_FOUND, e.to_string()).into_response()
+            }
+            PostgresError::Backend { .. } => {
+                if e.is_retryable() {
+                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                } else {
+                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
+                }
+            }
+            PostgresError::JobExists { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            }
+        }
+    } else {
+        StatusCode::OK.into_response()
+    }
+}
+
+#[tracing::instrument(name = "http_heartbeat_v1", level = "debug", skip_all)]
+async fn heartbeat_v1(
+    State(state): State<Arc<PgStore>>,
+    Path((queue, id)): Path<(String, String)>,
+    job_state: Option<Json<Box<RawValue>>>,
+) -> Response {
+    increment_counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v1");
+
+    // need to get run_id for new requeue logic.
+    let run_id = match state.get(&queue, &id).await {
+        Ok(Some(job)) if job.run_id.is_some() => job.run_id.unwrap(),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("job with id `{id}` not found in queue `{queue}`."),
+            )
+                .into_response()
+        }
+    };
+
+    let job_state = match job_state {
+        None => None,
+        Some(job_state) => Some(job_state.0),
+    };
+    if let Err(e) = state
+        .heartbeat(&queue, &id, &run_id, job_state.as_deref())
+        .await
+    {
+        increment_counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+        match e {
+            PostgresError::JobNotFound { .. } => {
+                (StatusCode::NOT_FOUND, e.to_string()).into_response()
+            }
+            PostgresError::Backend { .. } => {
+                if e.is_retryable() {
+                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                } else {
+                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
+                }
+            }
+            PostgresError::JobExists { .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            }
+        }
+    } else {
+        StatusCode::ACCEPTED.into_response()
+    }
+}
+
+#[tracing::instrument(name = "http_exists_v1", level = "debug", skip_all)]
+async fn exists_v1(
+    State(state): State<Arc<PgStore>>,
+    Path((queue, id)): Path<(String, String)>,
+) -> Response {
+    increment_counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v1");
+
+    match state.exists(&queue, &id).await {
+        Ok(exists) => {
+            if exists {
+                StatusCode::OK.into_response()
+            } else {
+                StatusCode::NOT_FOUND.into_response()
+            }
+        }
+        Err(e) => {
+            increment_counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+            match e {
+                PostgresError::Backend { .. } => {
+                    if e.is_retryable() {
+                        (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                    } else {
+                        (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
+                    }
+                }
+                _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+        }
+    }
+}
+
+#[tracing::instrument(name = "http_get_v1", level = "debug", skip_all)]
+async fn get_job_v1(
+    State(state): State<Arc<PgStore>>,
+    Path((queue, id)): Path<(String, String)>,
+) -> Response {
+    increment_counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v1");
+
+    match state.get(&queue, &id).await {
+        Ok(job) => {
+            if let Some(job) = job {
+                Json(job).into_response()
+            } else {
+                StatusCode::NOT_FOUND.into_response()
+            }
+        }
+        Err(e) => {
+            increment_counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+            match e {
+                PostgresError::Backend { .. } => {
+                    if e.is_retryable() {
+                        (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                    } else {
+                        (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
+                    }
+                }
+                _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+        }
+    }
+}
+
+#[tracing::instrument(name = "http_next_v1", level = "debug", skip_all)]
+async fn next_v1(
+    State(state): State<Arc<PgStore>>,
+    Path(queue): Path<String>,
+    params: Query<NextQueryInfo>,
+) -> Response {
+    increment_counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v1");
+
+    match state.next(&queue, params.0.num_jobs).await {
+        Err(e) => {
+            increment_counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+            if let PostgresError::Backend { .. } = e {
+                if e.is_retryable() {
+                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                } else {
+                    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                }
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+            }
+        }
+        Ok(job) => match job {
+            None => StatusCode::NO_CONTENT.into_response(),
+            Some(job) => (StatusCode::OK, Json(job)).into_response(),
+        },
+    }
+}
 
 impl Server {
     /// starts the HTTP server and waits for a shutdown signal before returning.
@@ -385,16 +619,22 @@ impl Server {
     pub(crate) fn init_app(backend: Arc<PgStore>) -> Router {
         Router::new()
             .route("/v1/queues/jobs", post(enqueue_v1))
+            .route("/v1/queues/jobs", put(reschedule_v1))
+            .route("/v1/queues/:queue/jobs", get(next_v1))
+            .route("/v1/queues/:queue/jobs/:id", head(exists_v1))
+            .route("/v1/queues/:queue/jobs/:id", get(get_job_v1))
+            .route("/v1/queues/:queue/jobs/:id", patch(heartbeat_v1))
+            .route("/v1/queues/:queue/jobs/:id", delete(delete_job_v1))
             .route("/v2/queues/jobs", post(enqueue_v2))
             .route("/v2/queues/:queue/jobs/:id/run_id/:run_id", put(re_enqueue))
-            .route("/v2/queues/:queue/jobs", get(next))
-            .route("/v2/queues/:queue/jobs/:id", head(exists))
-            .route("/v2/queues/:queue/jobs/:id", get(get_job))
+            .route("/v2/queues/:queue/jobs", get(next_v2))
+            .route("/v2/queues/:queue/jobs/:id", head(exists_v2))
+            .route("/v2/queues/:queue/jobs/:id", get(get_job_v2))
             .route(
                 "/v2/queues/:queue/jobs/:id/run_id/:run_id",
-                patch(heartbeat),
+                patch(heartbeat_v2),
             )
-            .route("/v2/queues/:queue/jobs/:id", delete(delete_job))
+            .route("/v2/queues/:queue/jobs/:id", delete(delete_job_v2))
             .route(
                 "/v2/queues/:queue/jobs/:id/run_id/:run_id",
                 delete(complete_job),
