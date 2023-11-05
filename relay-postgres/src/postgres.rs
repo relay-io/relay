@@ -470,7 +470,8 @@ impl PgStore {
         Ok(())
     }
 
-    /// Reschedules the an existing in-flight Job to be run again with the provided new information.
+    /// Re-queues the an existing in-flight Job to be run again or spawn a new set of jobs
+    /// atomically.
     ///
     /// The Jobs queue, id and run_id must match an existing in-flight Job. This is primarily used
     /// to schedule a new/the next run of a singleton `Job`. This provides the ability for
@@ -480,23 +481,22 @@ impl PgStore {
     /// This is allowed to facilitate advancing a `Job` through a distributed pipeline/state
     /// machine atomically if that is more appropriate than advancing using the `Job`'s state alone.
     ///
-    /// If rescheduling and changing the `Job`'s `queue` and `id` the mode will be used to
-    /// determine the behaviour if a conflicting record already exists, just like when enqueuing
-    /// jobs. The only difference is if `Ignore` is used and no update happens then the current
-    /// `Job` will be completed automatically.
+    /// The mode will be used to determine the behaviour if a conflicting record already exists,
+    /// just like when enqueuing jobs.
     ///
-    /// If the `Job` no longer exists or is not in-flight, this will return without error.
+    /// If the `Job` no longer exists or is not in-flight, this will return without error and will
+    /// not enqueue any jobs.
     ///
     /// # Errors
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(
-        name = "pg_re_enqueue",
+        name = "pg_requeue",
         level = "debug",
         skip_all,
         fields(job_id, queue, mode)
     )]
-    pub async fn re_enqueue(
+    pub async fn requeue(
         &self,
         mode: EnqueueMode,
         queue: &str,
@@ -505,6 +505,7 @@ impl PgStore {
         jobs: impl Iterator<Item = &New>,
     ) -> Result<()> {
         let mut client = self.pool.get().await?;
+
         let transaction = client.transaction().await?;
 
         let delete_stmt = transaction
@@ -533,7 +534,7 @@ impl PgStore {
             transaction.commit().await?;
 
             for (queue, count) in counts {
-                counter!("re_enqueued", count, "queue" => queue.to_string());
+                counter!("requeue", count, "queue" => queue.to_string());
             }
         } else {
             transaction.commit().await?;
@@ -541,9 +542,9 @@ impl PgStore {
 
         if let Some(run_at) = previous_run_at {
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => queue.to_string(), "type" => "re_enqueued");
+                histogram!("duration", d, "queue" => queue.to_string(), "type" => "requeue");
             }
-            debug!("re_enqueued jobs");
+            debug!("requeue jobs");
         }
         Ok(())
     }
@@ -1015,7 +1016,7 @@ mod tests {
         let next = &next.unwrap()[0];
 
         let result = store
-            .re_enqueue(
+            .requeue(
                 EnqueueMode::Unique,
                 &next.queue,
                 &next.id,
@@ -1034,7 +1035,7 @@ mod tests {
 
         // test job was deleted even though existing job existed
         store
-            .re_enqueue(
+            .requeue(
                 EnqueueMode::Replace,
                 &queue2,
                 &job_id2,
@@ -1111,7 +1112,7 @@ mod tests {
         let next = &next.unwrap()[0];
 
         let result = store
-            .re_enqueue(
+            .requeue(
                 EnqueueMode::Unique,
                 &next.queue,
                 &next.id,
@@ -1130,7 +1131,7 @@ mod tests {
 
         // test job was deleted even though existing job existed
         store
-            .re_enqueue(
+            .requeue(
                 EnqueueMode::Ignore,
                 &queue2,
                 &job_id2,
@@ -1192,7 +1193,7 @@ mod tests {
         assert_eq!(1, next.as_ref().unwrap().len());
         let next = &next.unwrap()[0];
         let result = store
-            .re_enqueue(
+            .requeue(
                 EnqueueMode::Unique,
                 &queue2,
                 &job_id2,
@@ -1247,7 +1248,7 @@ mod tests {
             run_at: Some(now),
         };
         store
-            .re_enqueue(
+            .requeue(
                 EnqueueMode::Unique,
                 &reschedule.queue,
                 &reschedule.id,
@@ -1272,7 +1273,7 @@ mod tests {
         // tests that can't reschedule a job no longer in flight anymore
         reschedule.payload = payload;
         store
-            .re_enqueue(
+            .requeue(
                 EnqueueMode::Unique,
                 &reschedule.queue,
                 &reschedule.id,
@@ -1290,7 +1291,7 @@ mod tests {
 
         // ensures no error rescheduling when no Job exists
         store
-            .re_enqueue(
+            .requeue(
                 EnqueueMode::Unique,
                 &reschedule.queue,
                 &reschedule.id.clone(),

@@ -376,18 +376,29 @@ impl Client {
         .await
     }
 
-    /// Re-enqueue an existing in-flight `Job` atomically into one or more provided `NewJob`'s.
+    /// Re-queues the an existing in-flight Job to be run again or spawn a new set of jobs
+    /// atomically.
     ///
-    /// This allows not only re-enqueuing the `Job` to run again but also allows rescheduling
-    /// it into another queue with a different id. This allows using a `Job` like a distributed
-    /// state machine.
+    /// The Jobs queue, id and `run_id` must match an existing in-flight Job. This is primarily used
+    /// to schedule a new/the next run of a singleton `Job`. This provides the ability for
+    /// self-perpetuating scheduled jobs in an atomic manner.
+    ///
+    /// Reschedule also allows you to change the `Job`'s `queue` and `id` during the reschedule.
+    /// This is allowed to facilitate advancing a `Job` through a distributed pipeline/state
+    /// machine atomically if that is more appropriate than advancing using the `Job`'s state alone.
+    ///
+    /// The mode will be used to determine the behaviour if a conflicting record already exists,
+    /// just like when enqueuing jobs.
+    ///
+    /// If the `Job` no longer exists or is not in-flight, this will return without error and will
+    /// not enqueue any jobs.
     ///
     /// # Errors
     ///
     /// Will return `Err` on:
     /// - an unrecoverable network error.
     /// - if one of the `Job`'s exists when mode is unique.
-    pub async fn re_enqueue<P, S>(
+    pub async fn requeue<P, S>(
         &self,
         mode: EnqueueMode,
         queue: &str,

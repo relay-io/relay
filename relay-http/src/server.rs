@@ -233,7 +233,7 @@ async fn re_enqueue(
     increment_counter!("http_request", "endpoint" => "re_enqueue", "version" => "v2");
 
     if let Err(e) = state
-        .re_enqueue(params.0.enqueue_mode(), &queue, &id, &run_id, jobs.0.iter())
+        .requeue(params.0.enqueue_mode(), &queue, &id, &run_id, jobs.0.iter())
         .await
     {
         increment_counter!("errors", "endpoint" => "re_enqueue", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_oneshot_job() -> anyhow::Result<()> {
+    async fn test_oneshot_job_v2() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let now = Utc::now()
             .duration_trunc(chrono::Duration::milliseconds(1))
@@ -529,6 +529,73 @@ mod tests {
         client
             .complete(&j2.queue, &j2.id, &j2.run_id.unwrap())
             .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_re_enqueue_v2() -> anyhow::Result<()> {
+        let (_srv, client) = init_server().await?;
+        let now = Utc::now()
+            .duration_trunc(chrono::Duration::milliseconds(1))
+            .unwrap();
+        let job: New<(), i32> = New {
+            id: Uuid::new_v4().to_string(),
+            queue: Uuid::new_v4().to_string(),
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: None,
+            payload: (),
+            state: None,
+            run_at: Some(now),
+        };
+        let mut jobs = vec![job];
+
+        client.enqueue(EnqueueMode::Unique, &jobs).await?;
+
+        let mut j = client
+            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .await?;
+        assert!(j.updated_at >= now);
+        assert_eq!(&jobs.get(0).unwrap().id, j.id.as_str());
+        assert_eq!(&jobs.get(0).unwrap().queue, j.queue.as_str());
+        assert_eq!(&jobs.get(0).unwrap().timeout, &j.timeout);
+
+        let mut polled_jobs = client
+            .poll::<(), i32>(&jobs.get(0).unwrap().queue, 10)
+            .await?;
+        assert_eq!(jobs.len(), 1);
+
+        let j2 = polled_jobs.pop().unwrap();
+        j.updated_at = j2.updated_at;
+        j.run_id = j2.run_id;
+        assert_eq!(j2, j);
+        assert!(j2.run_id.is_some());
+
+        jobs.get_mut(0).unwrap().run_at = Some(
+            Utc::now()
+                .duration_trunc(chrono::Duration::milliseconds(1))
+                .unwrap(),
+        );
+        client
+            .requeue(
+                EnqueueMode::Replace,
+                &j2.queue,
+                &j2.id,
+                &j2.run_id.unwrap(),
+                &jobs,
+            )
+            .await?;
+
+        let mut j = client.get::<(), i32>(&j2.queue, &j2.id).await?;
+        assert!(j.updated_at >= j2.updated_at);
+        assert!(j.created_at >= j2.created_at);
+        assert!(j.run_id.is_none());
+        j.updated_at = j2.updated_at;
+        j.created_at = j2.created_at;
+        j.run_id = j2.run_id;
+        j.run_at = j2.run_at;
+        assert_eq!(j, j2);
+
+        // client.remove(&job.queue, &job.id).await?;
         Ok(())
     }
 }
