@@ -2,6 +2,7 @@ use crate::num::{PositiveI16, PositiveI32};
 use anydate::serde::deserialize::anydate_utc_option;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use std::fmt::{Display, Formatter};
 use uuid::Uuid;
 
@@ -100,9 +101,28 @@ pub struct Existing<P, S> {
     pub created_at: DateTime<Utc>,
 }
 
+impl From<Existing<Box<RawValue>, Box<RawValue>>> for OldV1<Box<RawValue>, Box<RawValue>> {
+    fn from(value: Existing<Box<RawValue>, Box<RawValue>>) -> Self {
+        OldV1 {
+            id: value.id,
+            queue: value.queue,
+            timeout: value.timeout.get(),
+            max_retries: if let Some(max_retries) = value.max_retries {
+                i32::from(max_retries.get())
+            } else {
+                -1
+            },
+            payload: value.payload,
+            state: value.state,
+            run_at: Some(value.run_at),
+            updated_at: Some(value.updated_at),
+        }
+    }
+}
+
 #[deprecated(note = "please update to using Relay v2 endpoints and clients that use NewJob & Job.")]
 /// Job defines all information needed to process a job.
-#[derive(Default, Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct OldV1<P, S> {
     /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
     pub id: String,
@@ -136,4 +156,30 @@ pub struct OldV1<P, S> {
     /// heartbeat.
     /// This value is for reporting purposes only and will be ignored when enqueuing and rescheduling.
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl From<OldV1<Box<RawValue>, Box<RawValue>>> for New<Box<RawValue>, Box<RawValue>> {
+    fn from(value: OldV1<Box<RawValue>, Box<RawValue>>) -> Self {
+        New {
+            id: value.id,
+            queue: value.queue,
+            timeout: PositiveI32::new(value.timeout)
+                .unwrap_or_else(|| PositiveI32::new(0).unwrap()),
+            max_retries: if value.max_retries < 0 {
+                None
+            } else if value.max_retries > i32::from(i16::MAX) {
+                Some(PositiveI16::new(i16::MAX).unwrap())
+            } else if value.max_retries < i32::from(i16::MIN) {
+                None
+            } else {
+                Some(
+                    PositiveI16::new(i16::try_from(value.max_retries).unwrap())
+                        .unwrap_or_else(|| PositiveI16::new(0).unwrap()),
+                )
+            },
+            payload: value.payload,
+            state: value.state,
+            run_at: value.run_at,
+        }
+    }
 }

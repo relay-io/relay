@@ -309,30 +309,7 @@ async fn enqueue_v1(
     } else {
         EnqueueMode::Ignore
     };
-    let jobs = jobs
-        .0
-        .into_iter()
-        .map(|j| New {
-            id: j.id,
-            queue: j.queue,
-            timeout: PositiveI32::new(j.timeout).unwrap_or_else(|| PositiveI32::new(0).unwrap()),
-            max_retries: if j.max_retries < 0 {
-                None
-            } else if j.max_retries > i32::from(i16::MAX) {
-                Some(PositiveI16::new(i16::MAX).unwrap())
-            } else if j.max_retries < i32::from(i16::MIN) {
-                None
-            } else {
-                Some(
-                    PositiveI16::new(i16::try_from(j.max_retries).unwrap())
-                        .unwrap_or_else(|| PositiveI16::new(0).unwrap()),
-                )
-            },
-            payload: j.payload,
-            state: j.state,
-            run_at: j.run_at,
-        })
-        .collect::<Vec<_>>();
+    let jobs = jobs.0.into_iter().map(New::from).collect::<Vec<_>>();
 
     if let Err(e) = state.enqueue(mode, jobs.iter()).await {
         increment_counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2");
@@ -369,27 +346,7 @@ async fn reschedule_v1(
         _ => return StatusCode::ACCEPTED.into_response(),
     };
 
-    let j = job.0;
-    let job = New {
-        id: j.id,
-        queue: j.queue,
-        timeout: PositiveI32::new(j.timeout).unwrap_or_else(|| PositiveI32::new(0).unwrap()),
-        max_retries: if j.max_retries < 0 {
-            None
-        } else if j.max_retries > i32::from(i16::MAX) {
-            Some(PositiveI16::new(i16::MAX).unwrap())
-        } else if j.max_retries < i32::from(i16::MIN) {
-            None
-        } else {
-            Some(
-                PositiveI16::new(i16::try_from(j.max_retries).unwrap())
-                    .unwrap_or_else(|| PositiveI16::new(0).unwrap()),
-            )
-        },
-        payload: j.payload,
-        state: j.state,
-        run_at: j.run_at,
-    };
+    let job = New::from(job.0);
 
     if let Err(e) = state
         .requeue(
@@ -541,7 +498,7 @@ async fn get_job_v1(
     match state.get(&queue, &id).await {
         Ok(job) => {
             if let Some(job) = job {
-                Json(job).into_response()
+                Json(OldV1::from(job)).into_response()
             } else {
                 StatusCode::NOT_FOUND.into_response()
             }
@@ -585,7 +542,10 @@ async fn next_v1(
         }
         Ok(job) => match job {
             None => StatusCode::NO_CONTENT.into_response(),
-            Some(job) => (StatusCode::OK, Json(job)).into_response(),
+            Some(jobs) => {
+                let jobs = jobs.into_iter().map(OldV1::from).collect::<Vec<_>>();
+                (StatusCode::OK, Json(jobs)).into_response()
+            }
         },
     }
 }
@@ -682,6 +642,7 @@ mod tests {
     use relay_core::num::PositiveI32;
     use relay_postgres::PgStore;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+    use std::ops::Add;
     use tokio::task::JoinHandle;
     use uuid::Uuid;
 
@@ -694,6 +655,12 @@ mod tests {
     }
 
     async fn init_server() -> anyhow::Result<(JoinHandle<()>, Arc<Client>)> {
+        let (st, base_url) = init_server_only().await?;
+        let client = ClientBuilder::new(&base_url).build();
+        Ok((st, Arc::new(client)))
+    }
+
+    async fn init_server_only() -> anyhow::Result<(JoinHandle<()>, String)> {
         let db_url = std::env::var("DATABASE_URL")?;
         let store = Arc::new(PgStore::default(&db_url).await?);
         let app = Server::init_app(store);
@@ -712,8 +679,7 @@ mod tests {
         });
 
         let url = format!("http://{server_address}");
-        let client = ClientBuilder::new(&url).build();
-        Ok((server_thread, Arc::new(client)))
+        Ok((server_thread, url))
     }
 
     #[tokio::test]
@@ -980,5 +946,213 @@ mod tests {
         Ok(())
     }
 
-    // TODO: Add v1 tests
+    #[tokio::test]
+    async fn test_oneshot_job_v1() -> anyhow::Result<()> {
+        let (_srv, base_url) = init_server_only().await?;
+
+        let client = reqwest::ClientBuilder::default()
+            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(10))
+            .tcp_keepalive(Duration::from_secs(60))
+            .http2_keep_alive_timeout(Duration::from_secs(60))
+            .http2_keep_alive_interval(Duration::from_secs(5))
+            .http2_keep_alive_while_idle(true)
+            .pool_max_idle_per_host(512)
+            .build()
+            .expect("valid default HTTP Client configuration");
+
+        let now = Utc::now()
+            .duration_trunc(chrono::Duration::milliseconds(1))
+            .unwrap();
+        let job: OldV1<(), i32> = OldV1 {
+            id: Uuid::new_v4().to_string(),
+            queue: Uuid::new_v4().to_string(),
+            timeout: 30,
+            max_retries: -1,
+            payload: (),
+            state: None,
+            updated_at: None,
+            run_at: Some(now),
+        };
+        let jobs = vec![job];
+
+        let url = format!("{base_url}/v1/queues/jobs");
+        let resp = client.post(&url).json(&jobs).send().await?;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let url = format!(
+            "{base_url}/v1/queues/{}/jobs/{}",
+            &jobs.get(0).unwrap().queue,
+            &jobs.get(0).unwrap().id
+        );
+        let resp = client.head(&url).send().await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let url = format!(
+            "{base_url}/v1/queues/{}/jobs/{}",
+            &jobs.get(0).unwrap().queue,
+            &jobs.get(0).unwrap().id
+        );
+        let mut j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
+        assert!(j.updated_at.unwrap() >= now);
+        assert_eq!(&jobs.get(0).unwrap().id, j.id.as_str());
+        assert_eq!(&jobs.get(0).unwrap().queue, j.queue.as_str());
+        assert_eq!(&jobs.get(0).unwrap().timeout, &j.timeout);
+
+        let url = format!("{base_url}/v1/queues/{}/jobs?num_jobs=10", &j.queue);
+        let mut jobs: Vec<OldV1<(), i32>> = client.get(&url).send().await?.json().await?;
+        assert_eq!(jobs.len(), 1);
+
+        let j2 = jobs.pop().unwrap();
+        j.updated_at = j2.updated_at;
+        assert_eq!(j2, j);
+
+        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
+        client.patch(&url).json(&Some(3)).send().await?;
+
+        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
+        let j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
+        assert_eq!(j.state, Some(3));
+
+        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
+        client.delete(&url).send().await?;
+
+        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
+        let resp = client.head(&url).send().await?;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reschedule_job_v1() -> anyhow::Result<()> {
+        let (_srv, base_url) = init_server_only().await?;
+
+        let client = reqwest::ClientBuilder::default()
+            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(10))
+            .tcp_keepalive(Duration::from_secs(60))
+            .http2_keep_alive_timeout(Duration::from_secs(60))
+            .http2_keep_alive_interval(Duration::from_secs(5))
+            .http2_keep_alive_while_idle(true)
+            .pool_max_idle_per_host(512)
+            .build()
+            .expect("valid default HTTP Client configuration");
+
+        let now = Utc::now()
+            .duration_trunc(chrono::Duration::milliseconds(1))
+            .unwrap();
+        let job: OldV1<(), i32> = OldV1 {
+            id: Uuid::new_v4().to_string(),
+            queue: Uuid::new_v4().to_string(),
+            timeout: 30,
+            max_retries: -1,
+            payload: (),
+            state: None,
+            updated_at: None,
+            run_at: Some(now),
+        };
+        let mut jobs = vec![job];
+
+        let url = format!("{base_url}/v1/queues/jobs");
+        let resp = client.post(&url).json(&jobs).send().await?;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let url = format!(
+            "{base_url}/v1/queues/{}/jobs/{}",
+            &jobs.get(0).unwrap().queue,
+            &jobs.get(0).unwrap().id
+        );
+        let resp = client.head(&url).send().await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let url = format!(
+            "{base_url}/v1/queues/{}/jobs/{}",
+            &jobs.get(0).unwrap().queue,
+            &jobs.get(0).unwrap().id
+        );
+        let mut j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
+        assert!(j.updated_at.unwrap() >= now);
+        assert_eq!(&jobs.get(0).unwrap().id, j.id.as_str());
+        assert_eq!(&jobs.get(0).unwrap().queue, j.queue.as_str());
+        assert_eq!(&jobs.get(0).unwrap().timeout, &j.timeout);
+
+        let url = format!("{base_url}/v1/queues/{}/jobs?num_jobs=10", &j.queue);
+        let mut polled_jobs: Vec<OldV1<(), i32>> = client.get(&url).send().await?.json().await?;
+        assert_eq!(polled_jobs.len(), 1);
+
+        let j2 = polled_jobs.pop().unwrap();
+        j.updated_at = j2.updated_at;
+        assert_eq!(j2, j);
+
+        let now = Utc::now()
+            .add(chrono::Duration::days(1))
+            .duration_trunc(chrono::Duration::milliseconds(1))
+            .unwrap();
+        jobs.get_mut(0).unwrap().state = Some(4);
+        jobs.get_mut(0).unwrap().run_at = Some(now);
+        let url = format!("{base_url}/v1/queues/jobs");
+        let resp = client.put(&url).json(&jobs.get(0).unwrap()).send().await?;
+
+        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
+        let j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
+        assert_eq!(j.state, Some(4));
+        assert_eq!(j.run_at.unwrap(), now);
+
+        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
+        client.delete(&url).send().await?;
+
+        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
+        let resp = client.head(&url).send().await?;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        Ok(())
+    }
+
+    // TODO: test enqueue mode for v1 unique vs ignore
+    #[tokio::test]
+    async fn test_enqueue_modes_job_v1() -> anyhow::Result<()> {
+        let (_srv, base_url) = init_server_only().await?;
+
+        let client = reqwest::ClientBuilder::default()
+            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(10))
+            .tcp_keepalive(Duration::from_secs(60))
+            .http2_keep_alive_timeout(Duration::from_secs(60))
+            .http2_keep_alive_interval(Duration::from_secs(5))
+            .http2_keep_alive_while_idle(true)
+            .pool_max_idle_per_host(512)
+            .build()
+            .expect("valid default HTTP Client configuration");
+
+        let now = Utc::now()
+            .duration_trunc(chrono::Duration::milliseconds(1))
+            .unwrap();
+        let job: OldV1<(), i32> = OldV1 {
+            id: Uuid::new_v4().to_string(),
+            queue: Uuid::new_v4().to_string(),
+            timeout: 30,
+            max_retries: -1,
+            payload: (),
+            state: None,
+            updated_at: None,
+            run_at: Some(now),
+        };
+        let mut jobs = vec![job];
+
+        let url = format!("{base_url}/v1/queues/jobs");
+        let resp = client.post(&url).json(&jobs).send().await?;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let resp = client.post(&url).json(&jobs).send().await?;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // test sending more than one and will be ignored
+        let job = jobs.pop().unwrap();
+        let jobs = vec![job.clone(), job.clone()];
+
+        let resp = client.post(&url).json(&jobs).send().await?;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        Ok(())
+    }
 }
