@@ -438,7 +438,7 @@ mod tests {
     use chrono::DurationRound;
     use chrono::Utc;
     use portpicker::pick_unused_port;
-    use relay_client::http::client::{Builder as ClientBuilder, Client};
+    use relay_client::http::client::{Builder as ClientBuilder, Client, Error as ClientError};
     use relay_core::num::PositiveI32;
     use relay_postgres::PgStore;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
@@ -562,7 +562,7 @@ mod tests {
         let mut polled_jobs = client
             .poll::<(), i32>(&jobs.get(0).unwrap().queue, 10)
             .await?;
-        assert_eq!(jobs.len(), 1);
+        assert_eq!(polled_jobs.len(), 1);
 
         let j2 = polled_jobs.pop().unwrap();
         j.updated_at = j2.updated_at;
@@ -595,7 +595,148 @@ mod tests {
         j.run_at = j2.run_at;
         assert_eq!(j, j2);
 
-        // client.remove(&job.queue, &job.id).await?;
+        client.delete(&j2.queue, &j2.id).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_modes_v2() -> anyhow::Result<()> {
+        let (_srv, client) = init_server().await?;
+        let job: New<(), i32> = New {
+            id: Uuid::new_v4().to_string(),
+            queue: Uuid::new_v4().to_string(),
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: None,
+            payload: (),
+            state: None,
+            run_at: None,
+        };
+        let mut jobs = vec![job];
+
+        client.enqueue(EnqueueMode::Unique, &jobs).await?;
+        let result = client.enqueue(EnqueueMode::Unique, &jobs).await;
+        assert_eq!(result, Err(ClientError::JobExists));
+
+        let polled_jobs = client
+            .poll::<(), i32>(&jobs.get(0).unwrap().queue, 10)
+            .await?;
+        assert_eq!(polled_jobs.len(), 1);
+        assert_eq!(polled_jobs.get(0).unwrap().state, None);
+
+        let j2 = client
+            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .await?;
+        assert!(j2.run_id.is_some());
+        assert!(j2.state.is_none());
+
+        // test replacing the job and seeing the run_id + state change
+        jobs.get_mut(0).unwrap().state = Some(3);
+        client.enqueue(EnqueueMode::Replace, &jobs).await?; // should not error
+
+        let j2 = client
+            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .await?;
+        assert!(j2.run_id.is_none());
+        assert_eq!(j2.state, Some(3));
+
+        // test ignoring, new state should not be written
+        jobs.get_mut(0).unwrap().state = Some(4);
+        client.enqueue(EnqueueMode::Ignore, &jobs).await?; // should not error
+
+        let j2 = client
+            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .await?;
+        assert!(j2.run_id.is_none());
+        assert_eq!(j2.state, Some(3));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_v2() -> anyhow::Result<()> {
+        let (_srv, client) = init_server().await?;
+        let job: New<(), i32> = New {
+            id: Uuid::new_v4().to_string(),
+            queue: Uuid::new_v4().to_string(),
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: None,
+            payload: (),
+            state: None,
+            run_at: None,
+        };
+        let jobs = vec![job];
+
+        client.enqueue(EnqueueMode::Unique, &jobs).await?;
+        assert!(
+            client
+                .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+                .await?
+        );
+
+        client
+            .delete(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .await?;
+
+        assert!(
+            !client
+                .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+                .await?
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_complete_v2() -> anyhow::Result<()> {
+        let (_srv, client) = init_server().await?;
+        let job: New<(), i32> = New {
+            id: Uuid::new_v4().to_string(),
+            queue: Uuid::new_v4().to_string(),
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: None,
+            payload: (),
+            state: None,
+            run_at: None,
+        };
+        let jobs = vec![job];
+
+        client.enqueue(EnqueueMode::Unique, &jobs).await?;
+
+        let polled_jobs = client
+            .poll::<(), i32>(&jobs.get(0).unwrap().queue, 10)
+            .await?;
+        assert_eq!(polled_jobs.len(), 1);
+        assert!(
+            client
+                .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+                .await?
+        );
+
+        client
+            .complete(
+                &polled_jobs[0].queue,
+                &polled_jobs[0].id,
+                &polled_jobs[0].run_id.unwrap(),
+            )
+            .await?;
+        assert!(
+            !client
+                .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+                .await?
+        );
+        // calling again should not return error
+        client
+            .complete(
+                &polled_jobs[0].queue,
+                &polled_jobs[0].id,
+                &polled_jobs[0].run_id.unwrap(),
+            )
+            .await?;
+        // same for delete
+        client
+            .delete(&polled_jobs[0].queue, &polled_jobs[0].id)
+            .await?;
+
         Ok(())
     }
 }

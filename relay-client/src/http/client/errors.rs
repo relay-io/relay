@@ -5,7 +5,7 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Job error types.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum Error {
     /// indicates a Job with the existing ID and Queue already exists.
     #[error("Job does not exists")]
