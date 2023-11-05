@@ -11,3 +11,5 @@ services:
       POSTGRES_PASS: pass
       POSTGRES_HOST_AUTH_METHOD: trust
       POSTGRES_MULTIPLE_DATABASES: relay
+
+#  TODO: Add prometheus & grafana

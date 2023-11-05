@@ -2,7 +2,7 @@ use super::errors::Result;
 use crate::http::client::Error;
 use backoff_rs::{Exponential, ExponentialBackoffBuilder};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use relay_core::job::{EnqueueMode, Job, New};
+use relay_core::job::{EnqueueMode, Existing, New};
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -255,7 +255,7 @@ impl Client {
     /// Will return `Err` on:
     /// - an unrecoverable network error.
     /// - if the `Job` doesn't exist.
-    pub async fn get<P, S>(&self, queue: &str, job_id: &str) -> Result<Job<P, S>>
+    pub async fn get<P, S>(&self, queue: &str, job_id: &str) -> Result<Existing<P, S>>
     where
         P: DeserializeOwned,
         S: DeserializeOwned,
@@ -293,7 +293,7 @@ impl Client {
     /// Will return `Err` on:
     /// - an unrecoverable network error.
     /// - no `Job`s currently exists.
-    pub async fn next<P, S>(&self, queue: &str, num_jobs: usize) -> Result<Vec<Job<P, S>>>
+    pub async fn next<P, S>(&self, queue: &str, num_jobs: usize) -> Result<Vec<Existing<P, S>>>
     where
         P: DeserializeOwned,
         S: DeserializeOwned,
@@ -442,7 +442,7 @@ impl Client {
     /// # Errors
     ///
     /// Will return `Err` on an unrecoverable network error.
-    pub async fn poll<P, S>(&self, queue: &str, num_jobs: usize) -> Result<Vec<Job<P, S>>>
+    pub async fn poll<P, S>(&self, queue: &str, num_jobs: usize) -> Result<Vec<Existing<P, S>>>
     where
         P: DeserializeOwned,
         S: DeserializeOwned,

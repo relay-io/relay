@@ -59,7 +59,7 @@ pub struct New<P, S> {
 
 /// Job defines all information about a Job.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
-pub struct Job<P, S> {
+pub struct Existing<P, S> {
     /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
     pub id: String,
 

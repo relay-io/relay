@@ -7,7 +7,7 @@ use deadpool_postgres::{
 };
 use metrics::{counter, histogram, increment_counter};
 use pg_interval::Interval;
-use relay_core::job::{EnqueueMode, Job as RelayJob, New as RelayNew};
+use relay_core::job::{EnqueueMode, Existing as RelayJob, New as RelayNew};
 use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
 use rustls::client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier};
 use rustls::{Certificate, OwnedTrustAnchor, RootCertStore, ServerName};
