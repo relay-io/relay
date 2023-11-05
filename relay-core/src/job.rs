@@ -120,7 +120,9 @@ impl From<Existing<Box<RawValue>, Box<RawValue>>> for OldV1<Box<RawValue>, Box<R
     }
 }
 
-#[deprecated(note = "please update to using Relay v2 endpoints and clients that use NewJob & Job.")]
+#[deprecated(
+    note = "please update to using Relay v2 endpoints and clients that use job::Existing & job::New."
+)]
 /// Job defines all information needed to process a job.
 #[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct OldV1<P, S> {

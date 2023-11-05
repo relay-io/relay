@@ -13,6 +13,8 @@ members = [
 edition = "2021"
 authors = ["Dean Karn"]
 description = "A simple no-nonsense job runner"
+license = "AGPL-3.0-or-later"
+license-file = "LICENSE"
 
 [workspace.dependencies]
 tokio = { version = "1.33.0", default-features = false }

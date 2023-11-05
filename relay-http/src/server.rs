@@ -6,7 +6,7 @@ use axum::routing::{delete, get, head, patch, post, put};
 use axum::{Json, Router};
 use metrics::increment_counter;
 use relay_core::job::{EnqueueMode, New, OldV1};
-use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
+use relay_core::num::GtZeroI64;
 use relay_postgres::{Error as PostgresError, PgStore};
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -1092,7 +1092,7 @@ mod tests {
         jobs.get_mut(0).unwrap().state = Some(4);
         jobs.get_mut(0).unwrap().run_at = Some(now);
         let url = format!("{base_url}/v1/queues/jobs");
-        let resp = client.put(&url).json(&jobs.get(0).unwrap()).send().await?;
+        client.put(&url).json(&jobs.get(0).unwrap()).send().await?;
 
         let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
         let j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
