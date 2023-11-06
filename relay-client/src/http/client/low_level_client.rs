@@ -189,7 +189,7 @@ impl Client {
     /// - The `Job` doesn't exist.
     pub async fn complete(&self, queue: &str, job_id: &str, run_id: &Uuid) -> Result<()> {
         let url = format!(
-            "{}/v2/queues/{}/jobs/{}/run_id/{}",
+            "{}/v2/queues/{}/jobs/{}/run-id/{}",
             self.url,
             url_encode(queue),
             url_encode(job_id),
@@ -345,7 +345,7 @@ impl Client {
         S: Serialize,
     {
         let url = format!(
-            "{}/v2/queues/{}/jobs/{}/run_id/{}",
+            "{}/v2/queues/{}/jobs/{}/run-id/{}",
             self.url,
             url_encode(queue),
             url_encode(job_id),
@@ -411,7 +411,7 @@ impl Client {
         S: Serialize,
     {
         let url = format!(
-            "{}/v2/queues/{}/jobs/{}/run_id/{}?mode={}",
+            "{}/v2/queues/{}/jobs/{}/run-id/{}?mode={}",
             self.url,
             url_encode(queue),
             url_encode(job_id),

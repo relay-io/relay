@@ -31,11 +31,15 @@ impl Display for EnqueueMode {
 // Is a structure used to enqueue a new Job.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct New<P, S> {
-    /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
-    pub id: String,
-
-    /// Is used to differentiate different job types that can be picked up by job runners.
+    /// Is used to differentiate different job types that can be picked up by job runners/workers.
+    ///
+    /// The maximum size is 1024 characters.
     pub queue: String,
+
+    /// The unique Job ID which is also CAN be used to ensure the Job is unique within a `queue`.
+    ///
+    /// The maximum size is 1024 characters.
+    pub id: String,
 
     /// Denotes the duration, in seconds, after a Job has started processing or since the last
     /// heartbeat request occurred before considering the Job failed and being put back into the
@@ -43,29 +47,31 @@ pub struct New<P, S> {
     pub timeout: PositiveI32,
 
     /// Determines how many times the Job can be retried, due to timeouts, before being considered
-    /// permanently failed. Infinite retries are supported by using a negative number eg. -1
+    /// permanently failed. Infinite retries are supported when specifying None.
     pub max_retries: Option<PositiveI16>,
 
-    /// The raw JSON payload that the job runner will receive.
+    /// The immutable raw JSON payload that the job runner will receive and used to execute the Job.
     pub payload: P,
 
-    /// The raw JSON payload that the job runner will receive.
+    /// The mutable raw JSON state payload that the job runner will receive, update and use to track Job progress.
     pub state: Option<S>,
 
-    /// With this you can optionally schedule/set a Job to be run only at a specific time in the
-    /// future. This option should mainly be used for one-time jobs and scheduled jobs that have
-    /// the option of being self-perpetuated in combination with the reschedule endpoint.
+    /// Indicates the time that a `Job` is eligible to be run. Defaults to now if not specified.
     pub run_at: Option<DateTime<Utc>>,
 }
 
 /// Job defines all information about a Job.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Existing<P, S> {
-    /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.
-    pub id: String,
-
-    /// Is used to differentiate different job types that can be picked up by job runners.
+    /// Is used to differentiate different job types that can be picked up by job runners/workers.
+    ///
+    /// The maximum size is 1024 characters.
     pub queue: String,
+
+    /// The unique Job ID which is also CAN be used to ensure the Job is unique within a `queue`.
+    ///
+    /// The maximum size is 1024 characters.
+    pub id: String,
 
     /// Denotes the duration, in seconds, after a Job has started processing or since the last
     /// heartbeat request occurred before considering the Job failed and being put back into the
@@ -73,31 +79,30 @@ pub struct Existing<P, S> {
     pub timeout: PositiveI32,
 
     /// Determines how many times the Job can be retried, due to timeouts, before being considered
-    /// permanently failed. Infinite retries are supported by using a negative number eg. -1
+    /// permanently failed. Infinite retries are supported when specifying None.
     pub max_retries: Option<PositiveI16>,
 
-    /// Specifies how many more times the Job can be retried.
+    /// Specifies how many more times the Job can be retried before being considered permanently failed and deleted
     pub retries_remaining: Option<PositiveI16>,
 
-    /// The raw payload that the `Job` requires to run.
+    /// The immutable raw JSON payload that the job runner will receive and used to execute the Job.
     pub payload: P,
 
-    /// The raw `Job` state stored during enqueue, reschedule or heartbeat while in-flight..
+    /// The mutable raw JSON state payload that the job runner will receive, update and use to track Job progress.
     pub state: Option<S>,
 
     /// Is the current Jobs unique `run_id`. When there is a value here it signifies that the job is
     /// currently in-flight being processed.
     pub run_id: Option<Uuid>,
 
-    /// Indicates the time that a `Job` is eligible to be run.
+    /// Indicates the time that a `Job` is eligible to be run. Defaults to now if not specified.
     pub run_at: DateTime<Utc>,
 
-    /// This indicates the last time the `Job` was updated either through enqueue, reschedule or
+    /// This indicates the last time the `Job` was updated either through enqueue, requeue or
     /// heartbeat.
     pub updated_at: DateTime<Utc>,
 
-    /// This indicates the time the `Job` was originally created. this value does now change when a
-    /// Job is rescheduled.
+    /// This indicates the time the `Job` was originally created.
     pub created_at: DateTime<Utc>,
 }
 
@@ -142,15 +147,13 @@ pub struct OldV1<P, S> {
     #[serde(default)]
     pub max_retries: i32,
 
-    /// The raw JSON payload that the job runner will receive.
+    /// The immutable raw JSON payload that the job runner will receive and used to execute the Job.
     pub payload: P,
 
-    /// The raw JSON payload that the job runner will receive.
+    /// The mutable raw JSON state payload that the job runner will receive, update and use to track Job progress.
     pub state: Option<S>,
 
-    /// With this you can optionally schedule/set a Job to be run only at a specific time in the
-    /// future. This option should mainly be used for one-time jobs and scheduled jobs that have
-    /// the option of being self-perpetuated in combination with the reschedule endpoint.
+    /// Indicates the time that a `Job` is eligible to be run. Defaults to now if not specified.
     #[serde(default, deserialize_with = "anydate_utc_option")]
     pub run_at: Option<DateTime<Utc>>,
 

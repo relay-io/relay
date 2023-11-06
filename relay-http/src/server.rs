@@ -180,7 +180,7 @@ async fn re_enqueue(
         increment_counter!("errors", "endpoint" => "re_enqueue", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
         match e {
             PostgresError::JobExists { .. } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                (StatusCode::CONFLICT, e.to_string()).into_response()
             }
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -190,7 +190,7 @@ async fn re_enqueue(
                 }
             }
             PostgresError::JobNotFound { .. } => {
-                (StatusCode::NOT_FOUND, e.to_string()).into_response()
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
         }
     } else {
@@ -209,7 +209,7 @@ async fn delete_job_v2(
         increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
         match e {
             PostgresError::JobNotFound { .. } => {
-                (StatusCode::NOT_FOUND, e.to_string()).into_response()
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -238,7 +238,7 @@ async fn complete_job(
         increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
         match e {
             PostgresError::JobNotFound { .. } => {
-                (StatusCode::NOT_FOUND, e.to_string()).into_response()
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -586,17 +586,17 @@ impl Server {
             .route("/v1/queues/:queue/jobs/:id", patch(heartbeat_v1))
             .route("/v1/queues/:queue/jobs/:id", delete(delete_job_v1))
             .route("/v2/queues/jobs", post(enqueue_v2))
-            .route("/v2/queues/:queue/jobs/:id/run_id/:run_id", put(re_enqueue))
+            .route("/v2/queues/:queue/jobs/:id/run-id/:run_id", put(re_enqueue))
             .route("/v2/queues/:queue/jobs", get(next_v2))
             .route("/v2/queues/:queue/jobs/:id", head(exists_v2))
             .route("/v2/queues/:queue/jobs/:id", get(get_job_v2))
             .route(
-                "/v2/queues/:queue/jobs/:id/run_id/:run_id",
+                "/v2/queues/:queue/jobs/:id/run-id/:run_id",
                 patch(heartbeat_v2),
             )
             .route("/v2/queues/:queue/jobs/:id", delete(delete_job_v2))
             .route(
-                "/v2/queues/:queue/jobs/:id/run_id/:run_id",
+                "/v2/queues/:queue/jobs/:id/run-id/:run_id",
                 delete(complete_job),
             )
             .route("/health", get(health))

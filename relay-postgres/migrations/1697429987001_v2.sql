@@ -1,6 +1,8 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- Alter table constraints
+ALTER TABLE jobs ALTER COLUMN queue TYPE varchar(1024);
+ALTER TABLE jobs ALTER COLUMN id TYPE varchar(1024);
 ALTER TABLE jobs ALTER COLUMN max_retries DROP NOT NULL;
 ALTER TABLE jobs ALTER COLUMN retries_remaining DROP NOT NULL;
 
