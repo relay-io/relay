@@ -1,4 +1,5 @@
 use super::errors::Result;
+use crate::http::client::poller::{Poller, Runner};
 use crate::http::client::Error;
 use backoff_rs::{Exponential, ExponentialBackoffBuilder};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -8,6 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::borrow::Cow;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use uuid::Uuid;
@@ -435,6 +437,22 @@ impl Client {
             }
         })
         .await
+    }
+
+    /// Creates a new poller that will handle asynchronously polling and distributing `Job`s to be
+    /// processed by calling the supplied `Fn`.
+    pub fn build_poller<R, P, S>(
+        self: Arc<Self>,
+        queue: &str,
+        num_workers: usize,
+        runner: R,
+    ) -> Poller<R, P, S>
+    where
+        R: Runner<P, S> + Send + Sync + 'static,
+        P: DeserializeOwned + Send + Sync + 'static,
+        S: DeserializeOwned + Send + Sync + 'static,
+    {
+        Poller::new(self, queue, num_workers, runner)
     }
 
     /// Polls the Relay server until a `Job` becomes available.

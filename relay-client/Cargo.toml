@@ -17,3 +17,5 @@ async-channel.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["time", "macros","signal"] }
+anyhow.workspace = true
+async-trait = { version = "0.1.74" }
