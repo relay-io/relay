@@ -11,7 +11,12 @@ use tokio::{select, task};
 #[async_trait]
 /// Runner is a trait used by the `Poller` to execute a `Job` after fetching it to be processed.
 pub trait Runner<P, S> {
-    async fn run(&self, helper: JobHelper<'_, P, S>) -> ();
+    /// Runs the provided `Job` and returns a `Result` indicating if the `Job` was successfully.
+    ///
+    /// Relay currently does nothing with the returned `Result` but is intended to be used by the
+    /// post processing middleware for extending the pollers functionality such as recording job
+    /// history.
+    async fn run(&self, helper: &'_ JobHelper<'_, P, S>) -> std::result::Result<(), anyhow::Error>;
 }
 
 pub struct JobHelper<'a, P, S> {
@@ -30,7 +35,7 @@ impl<'a, P, S> JobHelper<'a, P, S> {
     /// one-off jobs not related to the existing running job in any way.
     ///
     /// It is rare to need the inner client and helper functions should be preferred in most cases.
-    pub fn inner_client(&self) -> &'a Client {
+    pub const fn inner_client(&self) -> &'a Client {
         self.client
     }
 
@@ -45,6 +50,57 @@ impl<'a, P, S> JobHelper<'a, P, S> {
         self.client
             .complete(&self.job.queue, &self.job.id, &self.job.run_id.unwrap())
             .await
+    }
+}
+
+pub struct PollerBuilder<R, P, S> {
+    client: Arc<Client>,
+    queue: String,
+    runner: Arc<R>,
+    max_workers: usize,
+    _payload: PhantomData<P>,
+    _state: PhantomData<S>,
+}
+
+impl<R, P, S> PollerBuilder<R, P, S>
+where
+    R: Runner<P, S> + Send + Sync + 'static,
+    P: DeserializeOwned + Send + Sync + 'static,
+    S: DeserializeOwned + Send + Sync + 'static,
+{
+    #[inline]
+    pub fn new(client: Arc<Client>, queue: &str, runner: R) -> Self {
+        Self {
+            client,
+            max_workers: 10,
+            runner: Arc::new(runner),
+            queue: queue.to_string(),
+            _payload: PhantomData,
+            _state: PhantomData,
+        }
+    }
+
+    /// Sets the maximum number of backend async workers indicating the maximum number of in-flight
+    /// `Job`s.
+    pub const fn max_workers(mut self, max_workers: usize) -> Self {
+        self.max_workers = max_workers;
+        self
+    }
+
+    // TODO: Add immutable middleware like interceptor functions allowing pre or post processing of
+    //       jobs. eg. recording job start and end times, logging, metrics, history.
+
+    /// Creates a new `Poller` using the Builders configuration.
+    #[inline]
+    pub fn build(self) -> std::result::Result<Poller<R, P, S>, anyhow::Error> {
+        Ok(Poller {
+            client: self.client,
+            max_workers: self.max_workers,
+            runner: self.runner,
+            queue: self.queue,
+            _payload: PhantomData,
+            _state: PhantomData,
+        })
     }
 }
 
@@ -64,17 +120,6 @@ where
     P: DeserializeOwned + Send + Sync + 'static,
     S: DeserializeOwned + Send + Sync + 'static,
 {
-    pub fn new(client: Arc<Client>, queue: &str, max_workers: usize, worker: R) -> Self {
-        Self {
-            client,
-            max_workers,
-            runner: Arc::new(worker),
-            queue: queue.to_string(),
-            _payload: PhantomData,
-            _state: PhantomData,
-        }
-    }
-
     pub async fn start(
         &self,
         cancel: impl Future<Output = ()> + Send + 'static,
@@ -148,12 +193,11 @@ where
         let runner = Arc::clone(&self.runner);
         async move {
             while let Ok(job) = rx.recv().await {
-                runner
-                    .run(JobHelper {
-                        client: &client,
-                        job,
-                    })
-                    .await;
+                let helper = JobHelper {
+                    client: &client,
+                    job,
+                };
+                let _ = runner.run(&helper).await;
                 rx_sem
                     .recv()
                     .await

@@ -27,7 +27,7 @@ pub enum Error {
 impl Error {
     #[inline]
     #[must_use]
-    pub fn is_retryable(&self) -> bool {
+    pub const fn is_retryable(&self) -> bool {
         match self {
             Error::Request { is_retryable, .. } => *is_retryable,
             _ => false,
@@ -36,7 +36,7 @@ impl Error {
 
     #[inline]
     #[must_use]
-    pub fn is_poll_retryable(&self) -> bool {
+    pub const fn is_poll_retryable(&self) -> bool {
         match self {
             Error::Request { is_poll, .. } => *is_poll,
             _ => false,

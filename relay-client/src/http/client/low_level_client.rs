@@ -1,5 +1,5 @@
 use super::errors::Result;
-use crate::http::client::poller::{Poller, Runner};
+use crate::http::client::poller::{PollerBuilder, Runner};
 use crate::http::client::Error;
 use backoff_rs::{Exponential, ExponentialBackoffBuilder};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -65,14 +65,14 @@ impl Builder {
 
     /// Set a custom backoff used when polling for `Job`s.
     #[must_use]
-    pub fn poll_backoff(mut self, backoff: Exponential) -> Self {
+    pub const fn poll_backoff(mut self, backoff: Exponential) -> Self {
         self.poll_backoff = backoff;
         self
     }
 
     /// Set a custom backoff used when retrying temporary errors interacting with the Relay server.
     #[must_use]
-    pub fn retry_backoff(mut self, backoff: Exponential) -> Self {
+    pub const fn retry_backoff(mut self, backoff: Exponential) -> Self {
         self.retry_backoff = backoff;
         self
     }
@@ -83,7 +83,7 @@ impl Builder {
     ///
     /// None - retry forever.
     #[must_use]
-    pub fn max_retries(mut self, max_retries: Option<usize>) -> Self {
+    pub const fn max_retries(mut self, max_retries: Option<usize>) -> Self {
         self.max_retries = max_retries;
         self
     }
@@ -441,18 +441,14 @@ impl Client {
 
     /// Creates a new poller that will handle asynchronously polling and distributing `Job`s to be
     /// processed by calling the supplied `Fn`.
-    pub fn build_poller<R, P, S>(
-        self: Arc<Self>,
-        queue: &str,
-        num_workers: usize,
-        runner: R,
-    ) -> Poller<R, P, S>
+    #[inline]
+    pub fn poller<R, P, S>(self: Arc<Self>, queue: &str, runner: R) -> PollerBuilder<R, P, S>
     where
         R: Runner<P, S> + Send + Sync + 'static,
         P: DeserializeOwned + Send + Sync + 'static,
         S: DeserializeOwned + Send + Sync + 'static,
     {
-        Poller::new(self, queue, num_workers, runner)
+        PollerBuilder::new(self, queue, runner)
     }
 
     /// Polls the Relay server until a `Job` becomes available.
