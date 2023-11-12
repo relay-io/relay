@@ -1533,7 +1533,7 @@ mod tests {
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
         let jobs = next.unwrap();
-        let next = jobs.get(0).unwrap();
+        let next = jobs.first().unwrap();
 
         let result = store.delete(&next.queue, &next.id).await;
         assert!(result.is_ok());
@@ -1570,7 +1570,7 @@ mod tests {
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
         let jobs = next.unwrap();
-        let next = jobs.get(0).unwrap();
+        let next = jobs.first().unwrap();
 
         let result = store
             .complete(&queue, &next.id, &next.run_id.unwrap())
@@ -1612,7 +1612,7 @@ mod tests {
         let next = store.next(&queue, GtZeroI64::new(1).unwrap()).await?;
         assert!(next.is_some());
         let jobs = next.unwrap();
-        let next = jobs.get(0).unwrap();
+        let next = jobs.first().unwrap();
 
         let state = &RawValue::from_string(r#"{"my": "state"}"#.to_string())?;
         let _ = store

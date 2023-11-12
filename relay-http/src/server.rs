@@ -696,12 +696,12 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
 
         let exists = client
-            .exists(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
+            .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
             .await?;
         assert!(exists);
 
         let mut j = client
-            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
+            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
             .await?;
         assert!(j.updated_at >= now);
         assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
@@ -752,7 +752,7 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
 
         let mut j = client
-            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
+            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
             .await?;
         assert!(j.updated_at >= now);
         assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
@@ -834,7 +834,7 @@ mod tests {
         client.enqueue(EnqueueMode::Replace, &jobs).await?; // should not error
 
         let j2 = client
-            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
+            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
             .await?;
         assert!(j2.run_id.is_none());
         assert_eq!(j2.state, Some(3));
@@ -844,7 +844,7 @@ mod tests {
         client.enqueue(EnqueueMode::Ignore, &jobs).await?; // should not error
 
         let j2 = client
-            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
+            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
             .await?;
         assert!(j2.run_id.is_none());
         assert_eq!(j2.state, Some(3));
@@ -908,7 +908,7 @@ mod tests {
         assert_eq!(polled_jobs.len(), 1);
         assert!(
             client
-                .exists(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
+                .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
                 .await?
         );
 
