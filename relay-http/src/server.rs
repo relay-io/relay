@@ -696,20 +696,20 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
 
         let exists = client
-            .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .exists(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
             .await?;
         assert!(exists);
 
         let mut j = client
-            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
             .await?;
         assert!(j.updated_at >= now);
-        assert_eq!(&jobs.get(0).unwrap().id, j.id.as_str());
-        assert_eq!(&jobs.get(0).unwrap().queue, j.queue.as_str());
-        assert_eq!(&jobs.get(0).unwrap().timeout, &j.timeout);
+        assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
+        assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
+        assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
 
         let mut jobs = client
-            .poll::<(), i32>(&jobs.get(0).unwrap().queue, 10)
+            .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
             .await?;
         assert_eq!(jobs.len(), 1);
 
@@ -752,15 +752,15 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
 
         let mut j = client
-            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
             .await?;
         assert!(j.updated_at >= now);
-        assert_eq!(&jobs.get(0).unwrap().id, j.id.as_str());
-        assert_eq!(&jobs.get(0).unwrap().queue, j.queue.as_str());
-        assert_eq!(&jobs.get(0).unwrap().timeout, &j.timeout);
+        assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
+        assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
+        assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
 
         let mut polled_jobs = client
-            .poll::<(), i32>(&jobs.get(0).unwrap().queue, 10)
+            .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
             .await?;
         assert_eq!(polled_jobs.len(), 1);
 
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(j2, j);
         assert!(j2.run_id.is_some());
 
-        jobs.get_mut(0).unwrap().run_at = Some(
+        jobs.first_mut().unwrap().run_at = Some(
             Utc::now()
                 .duration_trunc(chrono::Duration::milliseconds(1))
                 .unwrap(),
@@ -818,33 +818,33 @@ mod tests {
         assert_eq!(result, Err(ClientError::JobExists));
 
         let polled_jobs = client
-            .poll::<(), i32>(&jobs.get(0).unwrap().queue, 10)
+            .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
             .await?;
         assert_eq!(polled_jobs.len(), 1);
-        assert_eq!(polled_jobs.get(0).unwrap().state, None);
+        assert_eq!(polled_jobs.first().unwrap().state, None);
 
         let j2 = client
-            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
             .await?;
         assert!(j2.run_id.is_some());
         assert!(j2.state.is_none());
 
         // test replacing the job and seeing the run_id + state change
-        jobs.get_mut(0).unwrap().state = Some(3);
+        jobs.first_mut().unwrap().state = Some(3);
         client.enqueue(EnqueueMode::Replace, &jobs).await?; // should not error
 
         let j2 = client
-            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
             .await?;
         assert!(j2.run_id.is_none());
         assert_eq!(j2.state, Some(3));
 
         // test ignoring, new state should not be written
-        jobs.get_mut(0).unwrap().state = Some(4);
+        jobs.first_mut().unwrap().state = Some(4);
         client.enqueue(EnqueueMode::Ignore, &jobs).await?; // should not error
 
         let j2 = client
-            .get::<(), i32>(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
             .await?;
         assert!(j2.run_id.is_none());
         assert_eq!(j2.state, Some(3));
@@ -869,17 +869,17 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
         assert!(
             client
-                .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+                .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
                 .await?
         );
 
         client
-            .delete(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+            .delete(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
             .await?;
 
         assert!(
             !client
-                .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+                .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
                 .await?
         );
 
@@ -903,12 +903,12 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
 
         let polled_jobs = client
-            .poll::<(), i32>(&jobs.get(0).unwrap().queue, 10)
+            .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
             .await?;
         assert_eq!(polled_jobs.len(), 1);
         assert!(
             client
-                .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+                .exists(&jobs.first().unwrap().queue, &jobs.get(0).unwrap().id)
                 .await?
         );
 
@@ -921,7 +921,7 @@ mod tests {
             .await?;
         assert!(
             !client
-                .exists(&jobs.get(0).unwrap().queue, &jobs.get(0).unwrap().id)
+                .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
                 .await?
         );
         // calling again should not return error
@@ -976,22 +976,22 @@ mod tests {
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
-            &jobs.get(0).unwrap().queue,
-            &jobs.get(0).unwrap().id
+            &jobs.first().unwrap().queue,
+            &jobs.first().unwrap().id
         );
         let resp = client.head(&url).send().await?;
         assert_eq!(resp.status(), StatusCode::OK);
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
-            &jobs.get(0).unwrap().queue,
-            &jobs.get(0).unwrap().id
+            &jobs.first().unwrap().queue,
+            &jobs.first().unwrap().id
         );
         let mut j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
         assert!(j.updated_at.unwrap() >= now);
-        assert_eq!(&jobs.get(0).unwrap().id, j.id.as_str());
-        assert_eq!(&jobs.get(0).unwrap().queue, j.queue.as_str());
-        assert_eq!(&jobs.get(0).unwrap().timeout, &j.timeout);
+        assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
+        assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
+        assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
 
         let url = format!("{base_url}/v1/queues/{}/jobs?num_jobs=10", &j.queue);
         let mut jobs: Vec<OldV1<(), i32>> = client.get(&url).send().await?.json().await?;
@@ -1054,22 +1054,22 @@ mod tests {
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
-            &jobs.get(0).unwrap().queue,
-            &jobs.get(0).unwrap().id
+            &jobs.first().unwrap().queue,
+            &jobs.first().unwrap().id
         );
         let resp = client.head(&url).send().await?;
         assert_eq!(resp.status(), StatusCode::OK);
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
-            &jobs.get(0).unwrap().queue,
-            &jobs.get(0).unwrap().id
+            &jobs.first().unwrap().queue,
+            &jobs.first().unwrap().id
         );
         let mut j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
         assert!(j.updated_at.unwrap() >= now);
-        assert_eq!(&jobs.get(0).unwrap().id, j.id.as_str());
-        assert_eq!(&jobs.get(0).unwrap().queue, j.queue.as_str());
-        assert_eq!(&jobs.get(0).unwrap().timeout, &j.timeout);
+        assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
+        assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
+        assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
 
         let url = format!("{base_url}/v1/queues/{}/jobs?num_jobs=10", &j.queue);
         let mut polled_jobs: Vec<OldV1<(), i32>> = client.get(&url).send().await?.json().await?;
@@ -1083,10 +1083,10 @@ mod tests {
             .add(chrono::Duration::days(1))
             .duration_trunc(chrono::Duration::milliseconds(1))
             .unwrap();
-        jobs.get_mut(0).unwrap().state = Some(4);
-        jobs.get_mut(0).unwrap().run_at = Some(now);
+        jobs.first_mut().unwrap().state = Some(4);
+        jobs.first_mut().unwrap().run_at = Some(now);
         let url = format!("{base_url}/v1/queues/jobs");
-        client.put(&url).json(&jobs.get(0).unwrap()).send().await?;
+        client.put(&url).json(&jobs.first().unwrap()).send().await?;
 
         let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
         let j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
