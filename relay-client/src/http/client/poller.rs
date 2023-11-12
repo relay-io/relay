@@ -16,15 +16,15 @@ pub trait Runner<P, S> {
     /// Relay currently does nothing with the returned `Result` but is intended to be used by the
     /// post processing middleware for extending the pollers functionality such as recording job
     /// history.
-    async fn run(&self, helper: &'_ JobHelper<'_, P, S>) -> std::result::Result<(), anyhow::Error>;
+    async fn run(&self, helper: JobHelper<P, S>);
 }
 
-pub struct JobHelper<'a, P, S> {
-    client: &'a Client,
+pub struct JobHelper<P, S> {
+    client: Arc<Client>,
     job: Existing<P, S>,
 }
 
-impl<'a, P, S> JobHelper<'a, P, S> {
+impl<P, S> JobHelper<P, S> {
     /// Returns a reference to the job to be processed.
     pub const fn job(&self) -> &Existing<P, S> {
         &self.job
@@ -35,8 +35,8 @@ impl<'a, P, S> JobHelper<'a, P, S> {
     /// one-off jobs not related to the existing running job in any way.
     ///
     /// It is rare to need the inner client and helper functions should be preferred in most cases.
-    pub const fn inner_client(&self) -> &'a Client {
-        self.client
+    pub fn inner_client(&self) -> &Client {
+        &self.client
     }
 
     /// Completes an in-flight a `Job`.
@@ -150,7 +150,7 @@ where
         cancel: impl Future<Output = ()> + Send + 'static,
         tx_sem: Sender<()>,
         tx: Sender<Existing<P, S>>,
-    ) -> impl Future<Output = std::result::Result<(), anyhow::Error>> {
+    ) -> impl Future<Output = std::result::Result<(), anyhow::Error>> + Send + 'static {
         let client = Arc::clone(&self.client);
         let queue = self.queue.clone();
 
@@ -184,20 +184,21 @@ where
         }
     }
 
-    fn worker(
-        &self,
-        rx_sem: Receiver<()>,
-        rx: Receiver<Existing<P, S>>,
-    ) -> impl Future<Output = ()> {
+    fn worker(&self, rx_sem: Receiver<()>, rx: Receiver<Existing<P, S>>) -> impl Future<Output = ()>
+    where
+        P: Send + Sync + 'static,
+        S: Send + Sync + 'static,
+    {
         let client = Arc::clone(&self.client);
         let runner = Arc::clone(&self.runner);
         async move {
             while let Ok(job) = rx.recv().await {
-                let helper = JobHelper {
-                    client: &client,
-                    job,
-                };
-                let _ = runner.run(&helper).await;
+                runner
+                    .run(JobHelper {
+                        client: client.clone(),
+                        job,
+                    })
+                    .await;
                 rx_sem
                     .recv()
                     .await
