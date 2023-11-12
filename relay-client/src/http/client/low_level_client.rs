@@ -1,5 +1,5 @@
 use super::errors::Result;
-use crate::http::client::poller::{PollerBuilder, Runner};
+use crate::http::client::poller::{Builder as PollBuilder, Runner};
 use crate::http::client::Error;
 use backoff_rs::{Exponential, ExponentialBackoffBuilder};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -442,13 +442,13 @@ impl Client {
     /// Creates a new poller that will handle asynchronously polling and distributing `Job`s to be
     /// processed by calling the supplied `Fn`.
     #[inline]
-    pub fn poller<R, P, S>(self: Arc<Self>, queue: &str, runner: R) -> PollerBuilder<R, P, S>
+    pub fn poller<R, P, S>(self: Arc<Self>, queue: &str, runner: R) -> PollBuilder<R, P, S>
     where
         R: Runner<P, S> + Send + Sync + 'static,
         P: DeserializeOwned + Send + Sync + 'static,
         S: DeserializeOwned + Send + Sync + 'static,
     {
-        PollerBuilder::new(self, queue, runner)
+        PollBuilder::new(self, queue, runner)
     }
 
     /// Polls the Relay server until a `Job` becomes available.

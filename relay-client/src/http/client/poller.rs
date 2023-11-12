@@ -1,4 +1,5 @@
 use crate::http::client::{Client, Result};
+use anyhow::Context;
 use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
 use relay_core::job::Existing;
@@ -41,6 +42,10 @@ impl<P, S> JobHelper<P, S> {
 
     /// Completes an in-flight a `Job`.
     ///
+    /// # Panics
+    ///
+    /// IF the `Job` doesn't have a `run_id` set.
+    ///
     /// # Errors
     ///
     /// Will return `Err` on:
@@ -53,7 +58,7 @@ impl<P, S> JobHelper<P, S> {
     }
 }
 
-pub struct PollerBuilder<R, P, S> {
+pub struct Builder<R, P, S> {
     client: Arc<Client>,
     queue: String,
     runner: Arc<R>,
@@ -62,7 +67,7 @@ pub struct PollerBuilder<R, P, S> {
     _state: PhantomData<S>,
 }
 
-impl<R, P, S> PollerBuilder<R, P, S>
+impl<R, P, S> Builder<R, P, S>
 where
     R: Runner<P, S> + Send + Sync + 'static,
     P: DeserializeOwned + Send + Sync + 'static,
@@ -93,6 +98,9 @@ where
     /// Creates a new `Poller` using the Builders configuration.
     #[inline]
     pub fn build(self) -> std::result::Result<Poller<R, P, S>, anyhow::Error> {
+        if self.max_workers == 0 {
+            return Err(anyhow::anyhow!("max_workers must be greater than 0"));
+        }
         Ok(Poller {
             client: self.client,
             max_workers: self.max_workers,
@@ -120,6 +128,11 @@ where
     P: DeserializeOwned + Send + Sync + 'static,
     S: DeserializeOwned + Send + Sync + 'static,
 {
+    /// Starts the Relay HTTP Poller/Consumer.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` on an unrecoverable network or shutdown issue.
     pub async fn start(
         &self,
         cancel: impl Future<Output = ()> + Send + 'static,
@@ -137,7 +150,7 @@ where
 
         task::spawn(self.poller(cancel, tx_sem, tx))
             .await
-            .expect("spawned task failure")?;
+            .context("spawned task failure")??;
 
         for handle in handles {
             handle.await?;
@@ -169,7 +182,7 @@ where
                 }
 
                 let jobs = select! {
-                  _ = &mut cancel => {
+                  () = &mut cancel => {
                         break 'outer;
                     },
                     res = client.poll::<P, S>(&queue, num_jobs) => res?

@@ -208,9 +208,6 @@ async fn delete_job_v2(
     if let Err(e) = state.delete(&queue, &id).await {
         increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
         match e {
-            PostgresError::JobNotFound { .. } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            }
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
                     (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
@@ -218,7 +215,7 @@ async fn delete_job_v2(
                     (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
                 }
             }
-            PostgresError::JobExists { .. } => {
+            PostgresError::JobNotFound { .. } | PostgresError::JobExists { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
         }
@@ -237,9 +234,6 @@ async fn complete_job(
     if let Err(e) = state.complete(&queue, &id, &run_id).await {
         increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
         match e {
-            PostgresError::JobNotFound { .. } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            }
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
                     (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
@@ -247,7 +241,7 @@ async fn complete_job(
                     (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
                 }
             }
-            PostgresError::JobExists { .. } => {
+            PostgresError::JobNotFound { .. } | PostgresError::JobExists { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
             }
         }
