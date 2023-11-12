@@ -247,7 +247,7 @@ impl PgStore {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
-                r#"
+                "
                SELECT id,
                       queue,
                       timeout,
@@ -263,7 +263,7 @@ impl PgStore {
                WHERE
                     queue=$1 AND
                     id=$2
-            "#,
+            ",
             )
             .await?;
 
@@ -285,13 +285,13 @@ impl PgStore {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
-                r#"
+                "
                     SELECT EXISTS (
                         SELECT 1 FROM jobs WHERE
                             queue=$1 AND
                             id=$2
                     )
-                "#,
+                ",
             )
             .await?;
 
@@ -318,7 +318,7 @@ impl PgStore {
         // https://github.com/feikesteenbergen/demos/blob/19522f66ffb6eb358fe2d532d9bdeae38d4e2a0b/bugs/update_from_correlated.adoc
         let stmt = client
             .prepare_cached(
-                r#"
+                "
                WITH subquery AS (
                    SELECT
                         id,
@@ -352,7 +352,7 @@ impl PgStore {
                          j.run_at,
                          j.updated_at,
                          j.created_at
-            "#,
+            ",
             )
             .await?;
 
@@ -407,13 +407,13 @@ impl PgStore {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
-                r#"
+                "
                 DELETE FROM jobs
                 WHERE
                     queue=$1 AND
                     id=$2
                 RETURNING run_at
-            "#,
+            ",
             )
             .await?;
         let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
@@ -445,14 +445,14 @@ impl PgStore {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
-                r#"
+                "
                 DELETE FROM jobs
                 WHERE
                     queue=$1 AND
                     id=$2 AND
                     run_id=$3
                 RETURNING run_at
-            "#,
+            ",
             )
             .await?;
         let row = client.query_opt(&stmt, &[&queue, &job_id, &run_id]).await?;
@@ -510,7 +510,7 @@ impl PgStore {
 
         let delete_stmt = transaction
             .prepare_cached(
-                r#"
+                "
                 DELETE FROM jobs
                 WHERE
                     queue=$1 AND
@@ -518,7 +518,7 @@ impl PgStore {
                     in_flight=true AND
                     run_id=$3
                 RETURNING run_at
-            "#,
+            ",
             )
             .await?;
 
@@ -567,7 +567,7 @@ impl PgStore {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
-                r#"
+                "
                UPDATE jobs
                SET state=$4,
                    updated_at=NOW(),
@@ -578,7 +578,7 @@ impl PgStore {
                    in_flight=true AND
                    run_id=$3
                RETURNING run_at
-            "#,
+            ",
             )
             .await?;
 
@@ -624,10 +624,10 @@ impl PgStore {
 
         let stmt = client
             .prepare_cached(
-                r#"
+                "
             UPDATE internal_state
             SET last_run=NOW()
-            WHERE last_run <= NOW() - $1::text::interval"#,
+            WHERE last_run <= NOW() - $1::text::interval",
             )
             .await?;
 
@@ -653,7 +653,7 @@ impl PgStore {
 
         let stmt = client
             .prepare_cached(
-                r#"
+                "
                WITH cte_max_retries AS (
                     UPDATE jobs
                         SET in_flight=false,
@@ -684,7 +684,7 @@ impl PgStore {
                          FROM cte_no_max_retries
                      ) as grouped
                 GROUP BY queue
-            "#,
+            ",
             )
             .await?;
 
@@ -701,7 +701,7 @@ impl PgStore {
 
         let stmt = client
             .prepare_cached(
-                r#"
+                "
                WITH cte_updates AS (
                    DELETE FROM jobs
                    WHERE
@@ -713,7 +713,7 @@ impl PgStore {
                SELECT queue, COUNT(queue)
                FROM cte_updates
                GROUP BY queue
-            "#,
+            ",
             )
             .await?;
 
@@ -741,7 +741,7 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
         EnqueueMode::Unique => {
             transaction
                 .prepare_cached(
-                    r#"INSERT INTO jobs (
+                    "INSERT INTO jobs (
                           id,
                           queue,
                           timeout,
@@ -753,14 +753,14 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
                           updated_at,
                           created_at
                         )
-                        VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $8)"#,
+                        VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $8)",
                 )
                 .await?
         }
         EnqueueMode::Ignore => {
             transaction
                 .prepare_cached(
-                    r#"INSERT INTO jobs (
+                    "INSERT INTO jobs (
                           id,
                           queue,
                           timeout,
@@ -773,14 +773,14 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
                           created_at
                         )
                         VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $8)
-                        ON CONFLICT DO NOTHING"#,
+                        ON CONFLICT DO NOTHING",
                 )
                 .await?
         }
         EnqueueMode::Replace => {
             transaction
                 .prepare_cached(
-                    r#"INSERT INTO jobs (
+                    "INSERT INTO jobs (
                           id,
                           queue,
                           timeout,
@@ -802,7 +802,7 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
                             in_flight = false,
                             run_id = NULL,
                             run_at = EXCLUDED.run_at,
-                            updated_at = EXCLUDED.updated_at"#,
+                            updated_at = EXCLUDED.updated_at",
                 )
                 .await?
         }
