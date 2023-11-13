@@ -1,3 +1,18 @@
+//! Relay is a simple, no-nonsense, stateless job runner.
+//!
+//! A Job runner is like a Relay race, you hand the baton off in turn to be handed off again and so on until the end of the race.
+//! The race itself doesn't record the times, video itself or announce the outcomes; but rather those are done externally.
+//!
+//! To that end Relay is designed to be simple, reliable and easy to use.
+//! It on purpose does not:
+//! - Track `Job` history.
+//! - Keep logs.
+//! - Have any notion of success or fail.
+//! - Retain Job run information after it completes.
+//!
+//! Relay embraces the unix philosophy of doing one thing and doing it well leaving the above as optional features to be handled
+//! by the callers and or clients.
+
 #[allow(unused_imports)]
 use anyhow::Context;
 use clap::Parser;
@@ -12,15 +27,16 @@ use relay_postgres::PgStore;
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
 
+/// Relay command line options.
 #[derive(Debug, Parser)]
 #[clap(version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = env!("CARGO_PKG_DESCRIPTION"))]
 pub struct Opts {
-    /// HTTP Port to bind to.
+    /// HTTP Port to bind to, default 8080.
     #[cfg(feature = "frontend-http")]
     #[clap(long, default_value = "8080", env = "HTTP_PORT")]
     pub http_port: String,
 
-    /// Metrics Port to bind to.
+    /// Metrics Port to bind to, default 5001.
     #[cfg(feature = "metrics-prometheus")]
     #[clap(long, default_value = "5001", env = "METRICS_PORT")]
     pub metrics_port: String,
@@ -34,7 +50,7 @@ pub struct Opts {
     )]
     pub database_url: String,
 
-    /// Maximum allowed database connections
+    /// Maximum allowed database connections, default 10.
     #[cfg(feature = "backend-postgres")]
     #[clap(long, default_value = "10", env = "DATABASE_MAX_CONNECTIONS")]
     pub database_max_connections: usize,

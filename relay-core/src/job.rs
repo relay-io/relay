@@ -1,3 +1,4 @@
+//! This module contains all the Job definition and transformation logic..
 use crate::num::{PositiveI16, PositiveI32};
 use anydate::serde::deserialize::anydate_utc_option;
 use chrono::{DateTime, Utc};
@@ -28,7 +29,7 @@ impl Display for EnqueueMode {
     }
 }
 
-// Is a structure used to enqueue a new Job.
+/// Defines all information needed to enqueue or requeue a Job.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct New<P, S> {
     /// Is used to differentiate different job types that can be picked up by job runners/workers.
@@ -60,7 +61,7 @@ pub struct New<P, S> {
     pub run_at: Option<DateTime<Utc>>,
 }
 
-/// Job defines all information about a Job.
+/// Defines all information about an existing Job.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Existing<P, S> {
     /// Is used to differentiate different job types that can be picked up by job runners/workers.
@@ -128,7 +129,7 @@ impl From<Existing<Box<RawValue>, Box<RawValue>>> for OldV1<Box<RawValue>, Box<R
 #[deprecated(
     note = "please update to using Relay v2 endpoints and clients that use job::Existing & job::New."
 )]
-/// Job defines all information needed to process a job.
+/// Defines all information needed to process a v1 job definition.
 #[derive(Default, Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct OldV1<P, S> {
     /// The unique Job ID which is also CAN be used to ensure the Job is a singleton.

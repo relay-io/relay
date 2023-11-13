@@ -2,8 +2,9 @@ use crate::http::client::{Client, Result};
 use anyhow::Context;
 use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
-use relay_core::job::Existing;
+use relay_core::job::{EnqueueMode, Existing, New};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -20,12 +21,18 @@ pub trait Runner<P, S> {
     async fn run(&self, helper: JobHelper<P, S>);
 }
 
+/// Is used to provide a `Existing` job and Relay client instance to the `Runner` for processing.
+///
+/// It contains helper functions allowing abstraction away complexity of interacting with Relay.
 pub struct JobHelper<P, S> {
     client: Arc<Client>,
     job: Existing<P, S>,
 }
 
-impl<P, S> JobHelper<P, S> {
+impl<P, S> JobHelper<P, S>
+where
+    S: Serialize,
+{
     /// Returns a reference to the job to be processed.
     pub const fn job(&self) -> &Existing<P, S> {
         &self.job
@@ -40,20 +47,104 @@ impl<P, S> JobHelper<P, S> {
         &self.client
     }
 
-    /// Completes an in-flight a `Job`.
+    /// Completes this in-flight `Existing` job.
     ///
     /// # Panics
     ///
-    /// IF the `Job` doesn't have a `run_id` set.
+    /// If the `Existing` job doesn't have a `run_id` set.
     ///
     /// # Errors
     ///
     /// Will return `Err` on:
     /// - an unrecoverable network error.
-    /// - The `Job` doesn't exist.
+    /// - The `Existing` job doesn't exist.
     pub async fn complete(&self) -> Result<()> {
         self.client
             .complete(&self.job.queue, &self.job.id, &self.job.run_id.unwrap())
+            .await
+    }
+
+    /// Deletes the `Existing` job.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` on:
+    /// - an unrecoverable network error.
+    pub async fn delete(&self) -> Result<()> {
+        self.client.delete(&self.job.queue, &self.job.id).await
+    }
+
+    /// Returns if the `Existing` job still exists.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` on an unrecoverable network error.
+    pub async fn exists(&self) -> Result<bool> {
+        self.client.exists(&self.job.queue, &self.job.id).await
+    }
+
+    /// Sends a heartbeat request to this in-flight `Existing` job indicating it is still processing, resetting
+    /// the timeout. Optionally you can update the `Existing` jobs state during the same request.
+    ///
+    /// # Panics
+    ///
+    /// If the `Existing` job doesn't have a `run_id` set.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` on:
+    /// - an unrecoverable network error.
+    /// - if the `Existing` job doesn't exist.
+    pub async fn heartbeat(&self, state: Option<S>) -> Result<()> {
+        self.client
+            .heartbeat(
+                &self.job.queue,
+                &self.job.id,
+                &self.job.run_id.unwrap(),
+                state,
+            )
+            .await
+    }
+
+    /// Re-queues this in-flight `Existing` job to be run again or spawn a new set of jobs
+    /// atomically.
+    ///
+    /// The `Existing` jobs queue, id and `run_id` must match an existing in-flight Job.
+    /// This is primarily used to schedule a new/the next run of a singleton job. This provides the
+    /// ability for self-perpetuating scheduled jobs in an atomic manner.
+    ///
+    /// Reschedule also allows you to change the jobs `queue` and `id` during the reschedule.
+    /// This is allowed to facilitate advancing a job through a distributed pipeline/state
+    /// machine atomically if that is more appropriate than advancing using the jobs state alone.
+    ///
+    /// The mode will be used to determine the behaviour if a conflicting record already exists,
+    /// just like when enqueuing jobs.
+    ///
+    /// If the `Existing` job no longer exists or is not in-flight, this will return without error and will
+    /// not enqueue any jobs.
+    ///
+    /// # Panics
+    ///
+    /// If the `Existing` job doesn't have a `run_id` set.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` on:
+    /// - an unrecoverable network error.
+    /// - if one of the `Existing` jobs exists when mode is unique.
+    pub async fn requeue(&self, mode: EnqueueMode, jobs: &[New<P, S>]) -> Result<()>
+    where
+        P: Serialize,
+        S: Serialize,
+    {
+        self.client
+            .requeue(
+                mode,
+                &self.job.queue,
+                &self.job.id,
+                &self.job.run_id.unwrap(),
+                jobs,
+            )
             .await
     }
 }

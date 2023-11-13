@@ -6,6 +6,7 @@ use thiserror::Error;
 pub struct GtZeroI64(i64);
 
 impl GtZeroI64 {
+    /// Creates a new instance of the type if the value is positive.
     #[must_use]
     pub const fn new(value: i64) -> Option<Self> {
         if value > 0 {
@@ -15,9 +16,20 @@ impl GtZeroI64 {
         }
     }
 
+    /// Returns the value as a primitive type.
     #[must_use]
     pub const fn get(&self) -> i64 {
         self.0
+    }
+
+    /// Creates a new instance of the type without checking the value.
+    ///
+    /// # Safety
+    ///
+    /// The value must be greater than zero.
+    #[must_use]
+    pub const unsafe fn new_unchecked(value: i64) -> Self {
+        Self(value)
     }
 }
 
@@ -45,6 +57,7 @@ impl<'de> Deserialize<'de> for GtZeroI64 {
     }
 }
 
+/// Represents a parse error when converting from a primitive type to a `GtZeroI64`.
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum ParseError {
     /// Indicates that the inter is not a valid i32.

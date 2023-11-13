@@ -1,3 +1,4 @@
+//! The HTTP server for the relay.
 use axum::body::{Body, BoxBody};
 use axum::extract::{Path, Query, State};
 use axum::http::{Request, StatusCode};
@@ -256,8 +257,8 @@ struct NextQueryInfo {
     num_jobs: GtZeroI64,
 }
 
-fn default_num_jobs() -> GtZeroI64 {
-    GtZeroI64::new(1).unwrap()
+const fn default_num_jobs() -> GtZeroI64 {
+    unsafe { GtZeroI64::new_unchecked(1) }
 }
 
 #[tracing::instrument(name = "http_next_v2", level = "debug", skip_all)]

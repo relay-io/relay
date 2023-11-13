@@ -6,6 +6,7 @@ use thiserror::Error;
 pub struct PositiveI16(i16);
 
 impl PositiveI16 {
+    /// Creates a new instance of the type if the value is positive.
     #[must_use]
     pub const fn new(value: i16) -> Option<Self> {
         if value >= 0 {
@@ -15,9 +16,20 @@ impl PositiveI16 {
         }
     }
 
+    /// Returns the value as a primitive type.
     #[must_use]
     pub const fn get(&self) -> i16 {
         self.0
+    }
+
+    /// Creates a new instance of the type without checking the value.
+    ///
+    /// # Safety
+    ///
+    /// The value must be greater than zero.
+    #[must_use]
+    pub const unsafe fn new_unchecked(value: i16) -> Self {
+        Self(value)
     }
 }
 
@@ -45,6 +57,7 @@ impl<'de> Deserialize<'de> for PositiveI16 {
     }
 }
 
+/// Represents a parse error when converting from a primitive type to a `PositiveI16`.
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum ParseError {
     /// Indicates that the inter is not a valid i32.

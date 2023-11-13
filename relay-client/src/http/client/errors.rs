@@ -1,10 +1,10 @@
 use reqwest::StatusCode;
 use thiserror::Error;
 
-/// The Job Result.
+/// The HTTP Client interaction result.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Job error types.
+/// HTTP Client error types.
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum Error {
     /// indicates a Job with the existing ID and Queue already exists.
@@ -25,6 +25,7 @@ pub enum Error {
 }
 
 impl Error {
+    /// Returns if the error is deemed retryable.
     #[inline]
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
@@ -34,6 +35,7 @@ impl Error {
         }
     }
 
+    /// Returns if the error is deemed retryable while polling.
     #[inline]
     #[must_use]
     pub const fn is_poll_retryable(&self) -> bool {

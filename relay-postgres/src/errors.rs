@@ -1,7 +1,7 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-/// The Job Result.
+/// The result of a Postgres operation.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Job error types.
@@ -24,6 +24,7 @@ pub enum Error {
 }
 
 impl Error {
+    /// Returns the queue name for the error if available.
     #[inline]
     #[must_use]
     pub fn queue(&self) -> String {
@@ -33,6 +34,7 @@ impl Error {
         }
     }
 
+    /// Returns the error type for the error as a string.
     #[inline]
     #[must_use]
     pub fn error_type(&self) -> String {
@@ -43,6 +45,7 @@ impl Error {
         }
     }
 
+    /// Returns if this error is known to be retryable or not.
     #[inline]
     #[must_use]
     pub const fn is_retryable(&self) -> bool {

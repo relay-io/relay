@@ -118,7 +118,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Enqueues a batch of one or more `Job`s for processing using the provided `EnqueueMode`.
+    /// Enqueues a batch of one or more `New` jobs for processing using the provided `EnqueueMode`.
     ///
     /// # Errors
     ///
@@ -149,7 +149,7 @@ impl Client {
         .await
     }
 
-    /// Deletes a `Job`.
+    /// Deletes an `Existing` job.
     ///
     /// # Errors
     ///
@@ -182,13 +182,13 @@ impl Client {
         .await
     }
 
-    /// Completes an in-flight a `Job`.
+    /// Completes an in-flight `Existing` job.
     ///
     /// # Errors
     ///
     /// Will return `Err` on:
     /// - an unrecoverable network error.
-    /// - The `Job` doesn't exist.
+    /// - The `Existing` job doesn't exist.
     pub async fn complete(&self, queue: &str, job_id: &str, run_id: &Uuid) -> Result<()> {
         let url = format!(
             "{}/v2/queues/{}/jobs/{}/run-id/{}",
@@ -217,7 +217,7 @@ impl Client {
         .await
     }
 
-    /// Returns if a `Job` exists.
+    /// Returns if a `Existing` job exists.
     ///
     /// # Errors
     ///
@@ -250,7 +250,7 @@ impl Client {
         .await
     }
 
-    /// Attempts to return the a `Job` in order to report or display it's state.
+    /// Attempts to return the an `Existing` job in order to report or display it's state.
     ///
     /// # Errors
     ///
@@ -288,13 +288,13 @@ impl Client {
         .await
     }
 
-    /// Attempts to retrieve the next `Job` for processing.
+    /// Attempts to retrieve the next `Existing` job(s) for processing.
     ///
     /// # Errors
     ///
     /// Will return `Err` on:
     /// - an unrecoverable network error.
-    /// - no `Job`s currently exists.
+    /// - no `Existing` jobs currently exists.
     pub async fn next<P, S>(&self, queue: &str, num_jobs: usize) -> Result<Vec<Existing<P, S>>>
     where
         P: DeserializeOwned,
@@ -328,14 +328,14 @@ impl Client {
         .await
     }
 
-    /// Sends a heartbeat request to an in-flight `Job` indicating it is still processing, resetting
-    /// the timeout. Optionally you can update the `Job` state during the same request.
+    /// Sends a heartbeat request to an in-flight `Existing` job indicating it is still processing, resetting
+    /// the timeout. Optionally you can update the `Existing` jobs state during the same request.
     ///
     /// # Errors
     ///
     /// Will return `Err` on:
     /// - an unrecoverable network error.
-    /// - if the `Job` doesn't exist.
+    /// - if the `Existing` job doesn't exist.
     pub async fn heartbeat<S>(
         &self,
         queue: &str,
@@ -378,28 +378,28 @@ impl Client {
         .await
     }
 
-    /// Re-queues the an existing in-flight Job to be run again or spawn a new set of jobs
+    /// Re-queues the an existing in-flight `Existing` job to be run again or spawn a new set of jobs
     /// atomically.
     ///
-    /// The Jobs queue, id and `run_id` must match an existing in-flight Job. This is primarily used
-    /// to schedule a new/the next run of a singleton `Job`. This provides the ability for
-    /// self-perpetuating scheduled jobs in an atomic manner.
+    /// The `Existing` jobs queue, id and `run_id` must match an existing in-flight Job.
+    /// This is primarily used to schedule a new/the next run of a singleton job. This provides the
+    /// ability for self-perpetuating scheduled jobs in an atomic manner.
     ///
-    /// Reschedule also allows you to change the `Job`'s `queue` and `id` during the reschedule.
-    /// This is allowed to facilitate advancing a `Job` through a distributed pipeline/state
-    /// machine atomically if that is more appropriate than advancing using the `Job`'s state alone.
+    /// Reschedule also allows you to change the jobs `queue` and `id` during the reschedule.
+    /// This is allowed to facilitate advancing a job through a distributed pipeline/state
+    /// machine atomically if that is more appropriate than advancing using the jobs state alone.
     ///
     /// The mode will be used to determine the behaviour if a conflicting record already exists,
     /// just like when enqueuing jobs.
     ///
-    /// If the `Job` no longer exists or is not in-flight, this will return without error and will
+    /// If the `Existing` job no longer exists or is not in-flight, this will return without error and will
     /// not enqueue any jobs.
     ///
     /// # Errors
     ///
     /// Will return `Err` on:
     /// - an unrecoverable network error.
-    /// - if one of the `Job`'s exists when mode is unique.
+    /// - if one of the `Existing` jobs exists when mode is unique.
     pub async fn requeue<P, S>(
         &self,
         mode: EnqueueMode,
@@ -439,8 +439,8 @@ impl Client {
         .await
     }
 
-    /// Creates a new poller that will handle asynchronously polling and distributing `Job`s to be
-    /// processed by calling the supplied `Fn`.
+    /// Creates a new poller that will handle asynchronously polling and distributing `Existing`
+    /// jobs to be processed by calling the supplied `Runner`.
     #[inline]
     pub fn poller<R, P, S>(self: Arc<Self>, queue: &str, runner: R) -> PollBuilder<R, P, S>
     where

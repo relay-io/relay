@@ -356,8 +356,8 @@ impl PgStore {
             )
             .await?;
 
-        let limit = num_jobs.get();
-        let params: Vec<&(dyn ToSql + Sync)> = vec![&queue, &limit];
+        let limit = num_jobs.as_ref();
+        let params: Vec<&(dyn ToSql + Sync)> = vec![&queue, limit];
         let stream = client.query_raw(&stmt, params).await?;
         tokio::pin!(stream);
 
@@ -817,19 +817,19 @@ fn row_to_job(row: &Row) -> Job {
         timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2))).unwrap_or_else(
             || {
                 warn!("invalid timeout value, defaulting to 30s");
-                PositiveI32::new(30).unwrap()
+                unsafe { PositiveI32::new_unchecked(30) }
             },
         ),
         max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
             PositiveI16::new(i).unwrap_or_else(|| {
                 warn!("invalid max_retries value, defaulting to 0");
-                PositiveI16::new(0).unwrap()
+                unsafe { PositiveI16::new_unchecked(0) }
             })
         }),
         retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
             PositiveI16::new(i).unwrap_or_else(|| {
                 warn!("invalid max_retries value, defaulting to 0");
-                PositiveI16::new(0).unwrap()
+                unsafe { PositiveI16::new_unchecked(0) }
             })
         }),
         payload: row.get::<usize, Json<Box<RawValue>>>(5).0,

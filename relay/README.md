@@ -24,10 +24,10 @@ For details about the API see [here](../relay-http/V2-API.md).
 #### Clients
 Here is a list of existing clients.
 
-| Language                                                                                 | Description                 |
-|------------------------------------------------------------------------------------------|-----------------------------|
-| [Go](https://github.com/relay-io/relay-sdk-go)                                           | Go low & high level client. |
-| [Rust](https://github.com/relay-io/relay/blob/main/relay-http/src/http/client/client.rs) | Rust client and consumer.   |
+| Language                                                                                 | Description                      |
+|------------------------------------------------------------------------------------------|----------------------------------|
+| [Go](https://github.com/relay-io/relay-sdk-go)                                           | Go low & high level client.      |
+| [Rust](https://github.com/relay-io/relay/blob/main/relay-http/src/http/client/client.rs) | Rust client and poller/consumer. |
 
 
 #### License

@@ -17,15 +17,17 @@ by the callers and or clients.
 #### Crates
 See details for each crate.
 
-| Crate                                        |     | Description                                  |
-|----------------------------------------------|:----|----------------------------------------------|
-| [relay](./relay/README.md)                   |     | A simple, no-nonsense, stateless job runner. |
-| [relay-core](./relay-core/README.md)         |     | Contains all core shared code and logic.     |
-| [relay-http](./relay-http/README.md)         |     | HTTP frontend for Relay.                     |
-| [relay-client](./relay-client/README.md)     |     | Relay client for Rely frontends.             |
-| [relay-postgres](./relay-postgres/README.md) |     | Postgres backend for Relay.                  |
+| Crate                                        | Description                                  | License           |
+|----------------------------------------------|----------------------------------------------|-------------------|
+| [relay](./relay/README.md)                   | A simple, no-nonsense, stateless job runner. | AGPL-3.0-or-later |
+| [relay-core](./relay-core/README.md)         | Contains all core shared code and logic.     | MIT OR Apache-2.0 |
+| [relay-http](./relay-http/README.md)         | HTTP frontend for Relay.                     | MIT OR Apache-2.0 |
+| [relay-client](./relay-client/README.md)     | Relay client for Rely frontends.             | AGPL-3.0-or-later |          
+| [relay-postgres](./relay-postgres/README.md) | Postgres backend for Relay.                  | AGPL-3.0-or-later |
 
 #### License
+
+Unless otherwise explicitly stated the below license applies to all code.
 
 <sup>
 Licensed under <a href="LICENSE">GNU AFFERO GENERAL PUBLIC LICENSE 3.0 or later</a>

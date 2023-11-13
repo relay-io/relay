@@ -1,3 +1,4 @@
+//! HTTP client & poller/consumer for the Relay API.
 mod errors;
 mod low_level_client;
 mod poller;
