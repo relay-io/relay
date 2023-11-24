@@ -60,7 +60,7 @@ pub struct New<P, S> {
     /// Indicates the time that a job is eligible to be run. Defaults to now if not specified.
     pub run_at: Option<DateTime<Utc>>,
 }
-:wqq
+
 /// Defines all information about an existing Job.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Existing<P, S> {
