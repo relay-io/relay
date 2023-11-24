@@ -7,7 +7,7 @@ use deadpool_postgres::{
 };
 use metrics::{counter, histogram, increment_counter};
 use pg_interval::Interval;
-use relay_core::job::{EnqueueMode, Existing as RelayJob, New as RelayNew};
+use relay_core::job::{EnqueueMode, Existing as RelayExisting, New as RelayNew};
 use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
 use rustls::client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier};
 use rustls::{Certificate, OwnedTrustAnchor, RootCertStore, ServerName};
@@ -26,7 +26,7 @@ use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-type Job = RelayJob<Box<RawValue>, Box<RawValue>>;
+type Existing = RelayExisting<Box<RawValue>, Box<RawValue>>;
 type New = RelayNew<Box<RawValue>, Box<RawValue>>;
 
 const MIGRATIONS: [Migration; 2] = [
@@ -243,7 +243,7 @@ impl PgStore {
     /// # Errors
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
-    pub async fn get(&self, queue: &str, job_id: &str) -> Result<Option<Job>> {
+    pub async fn get(&self, queue: &str, job_id: &str) -> Result<Option<Existing>> {
         let client = self.pool.get().await?;
         let stmt = client
             .prepare_cached(
@@ -308,7 +308,7 @@ impl PgStore {
     ///
     /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     #[tracing::instrument(name = "pg_next", level = "debug", skip_all, fields(num_jobs=num_jobs.get(), queue=%queue))]
-    pub async fn next(&self, queue: &str, num_jobs: GtZeroI64) -> Result<Option<Vec<Job>>> {
+    pub async fn next(&self, queue: &str, num_jobs: GtZeroI64) -> Result<Option<Vec<Existing>>> {
         let client = self.pool.get().await?;
 
         // MUST USE CTE WITH `FOR UPDATE SKIP LOCKED LIMIT` otherwise the Postgres Query Planner
@@ -364,7 +364,7 @@ impl PgStore {
         // on purpose NOT using num_jobs as the capacity to avoid the potential attack vector of
         // someone exhausting all memory by sending a large number even if there aren't that many
         // records in the database.
-        let mut jobs: Vec<Job> = if let Some(size) = stream.size_hint().1 {
+        let mut jobs: Vec<Existing> = if let Some(size) = stream.size_hint().1 {
             Vec::with_capacity(size)
         } else {
             Vec::new()
@@ -810,8 +810,8 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
     Ok(stmt)
 }
 
-fn row_to_job(row: &Row) -> Job {
-    Job {
+fn row_to_job(row: &Row) -> Existing {
+    Existing {
         id: row.get(0),
         queue: row.get(1),
         timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2))).unwrap_or_else(
