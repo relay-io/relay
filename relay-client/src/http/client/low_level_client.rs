@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 /// A Builder can be used to create a custom `Client`.
 pub struct Builder {
-    url: String,
+    base_url: String,
     poll_backoff: Exponential,
     retry_backoff: Exponential,
     max_retries: Option<usize>,
@@ -30,7 +30,7 @@ impl Builder {
     ///
     /// If internal configuration of the `reqwest::Client` is invalid.
     #[must_use]
-    pub fn new(url: &str) -> Self {
+    pub fn new(base_url: &str) -> Self {
         let next_backoff = ExponentialBackoffBuilder::default()
             .interval(Duration::from_millis(200))
             .jitter(Duration::from_millis(25))
@@ -55,7 +55,7 @@ impl Builder {
             .expect("valid default HTTP Client configuration");
 
         Self {
-            url: url.to_string(),
+            base_url: base_url.to_string(),
             poll_backoff: next_backoff,
             retry_backoff,
             max_retries: None, // no max retries
@@ -99,7 +99,7 @@ impl Builder {
     #[must_use]
     pub fn build(self) -> Client {
         Client {
-            url: self.url,
+            base_url: self.base_url,
             client: self.client,
             poll_backoff: self.poll_backoff,
             retry_backoff: self.retry_backoff,
@@ -110,7 +110,7 @@ impl Builder {
 
 /// Relay HTTP Client.
 pub struct Client {
-    url: String,
+    base_url: String,
     client: reqwest::Client,
     poll_backoff: Exponential,
     retry_backoff: Exponential,
@@ -128,7 +128,7 @@ impl Client {
         P: Serialize,
         S: Serialize,
     {
-        let url = format!("{}/v2/queues/jobs?mode={}", self.url, mode);
+        let url = format!("{}/v2/queues/jobs?mode={}", self.base_url, mode);
 
         self.with_retry(|| async {
             let res = self.client.post(&url).json(jobs).send().await?;
@@ -158,7 +158,7 @@ impl Client {
     pub async fn delete(&self, queue: &str, job_id: &str) -> Result<()> {
         let url = format!(
             "{}/v2/queues/{}/jobs/{}",
-            self.url,
+            self.base_url,
             url_encode(queue),
             url_encode(job_id)
         );
@@ -192,7 +192,7 @@ impl Client {
     pub async fn complete(&self, queue: &str, job_id: &str, run_id: &Uuid) -> Result<()> {
         let url = format!(
             "{}/v2/queues/{}/jobs/{}/run-id/{}",
-            self.url,
+            self.base_url,
             url_encode(queue),
             url_encode(job_id),
             run_id
@@ -225,7 +225,7 @@ impl Client {
     pub async fn exists(&self, queue: &str, job_id: &str) -> Result<bool> {
         let url = format!(
             "{}/v2/queues/{}/jobs/{}",
-            self.url,
+            self.base_url,
             url_encode(queue),
             url_encode(job_id)
         );
@@ -264,7 +264,7 @@ impl Client {
     {
         let url = format!(
             "{}/v2/queues/{}/jobs/{}",
-            self.url,
+            self.base_url,
             url_encode(queue),
             url_encode(job_id)
         );
@@ -301,7 +301,10 @@ impl Client {
         S: DeserializeOwned,
     {
         let queue = url_encode(queue);
-        let url = format!("{}/v2/queues/{queue}/jobs?num_jobs={num_jobs}", self.url);
+        let url = format!(
+            "{}/v2/queues/{queue}/jobs?num_jobs={num_jobs}",
+            self.base_url
+        );
 
         self.with_retry(|| async {
             let res = self.client.get(&url).send().await?;
@@ -348,7 +351,7 @@ impl Client {
     {
         let url = format!(
             "{}/v2/queues/{}/jobs/{}/run-id/{}",
-            self.url,
+            self.base_url,
             url_encode(queue),
             url_encode(job_id),
             run_id
@@ -414,7 +417,7 @@ impl Client {
     {
         let url = format!(
             "{}/v2/queues/{}/jobs/{}/run-id/{}?mode={}",
-            self.url,
+            self.base_url,
             url_encode(queue),
             url_encode(job_id),
             run_id,
