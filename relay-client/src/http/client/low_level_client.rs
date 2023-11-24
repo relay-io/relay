@@ -250,7 +250,7 @@ impl Client {
         .await
     }
 
-    /// Attempts to return the an `Existing` job in order to report or display it's state.
+    /// Attempts to return the an `Existing` job.
     ///
     /// # Errors
     ///

@@ -113,8 +113,8 @@ NOTE: The body of the response will have more detail about the specific error.
 |------|------------------------------------------------------------------------------------|
 | 200  | Job successfully retrieved.                                                        |
 | 204  | There is currently no Job in the provided queue to return. Backoff an retry later. |
-| 429  | A retryable error occurred.                                                        |
 | 500  | An unknown error has occurred server side.                                         |
+| 503  | A retryable error occurred, maintenance should be  included as retryable.          |
 
 
 
@@ -131,13 +131,13 @@ This payload is persisted in order to save job intermediate state.
 #### Response Codes
 NOTE: The body of the response will have more detail about the specific error in plain text.
 
-| code | description                                                           |
-|------|-----------------------------------------------------------------------|
-| 202  | Heartbeat successfully applied to the Job.                            |
-| 429  | A retryable error occurred.                                           |
-| 404  | Job was not found for updating.                                       |
-| 422  | A permanent error has occurred, likely relating to the state payload. |
-| 500  | An unknown error has occurred server side.                            |
+| code | description                                                               |
+|------|---------------------------------------------------------------------------|
+| 202  | Heartbeat successfully applied to the Job.                                |
+| 404  | Job was not found for updating.                                           |
+| 422  | A permanent error has occurred, likely relating to the state payload.     |
+| 500  | An unknown error has occurred server side.                                |
+| 503  | A retryable error occurred, maintenance should be  included as retryable. |
 
 
 ### requeue `PUT /v2/queues/{queue}/jobs/{id}/run-id/{run_id}`
