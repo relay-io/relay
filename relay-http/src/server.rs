@@ -165,20 +165,20 @@ async fn heartbeat_v2(
     }
 }
 
-#[tracing::instrument(name = "http_re_enqueue_v2", level = "debug", skip_all)]
-async fn re_enqueue(
+#[tracing::instrument(name = "http_requeue_v2", level = "debug", skip_all)]
+async fn requeue(
     State(state): State<Arc<PgStore>>,
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
     params: Query<EnqueueQueryInfo>,
     jobs: Json<Vec<New<Box<RawValue>, Box<RawValue>>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "re_enqueue", "version" => "v2");
+    increment_counter!("http_request", "endpoint" => "requeue", "version" => "v2");
 
     if let Err(e) = state
         .requeue(params.0.enqueue_mode(), &queue, &id, &run_id, jobs.0.iter())
         .await
     {
-        increment_counter!("errors", "endpoint" => "re_enqueue", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+        increment_counter!("errors", "endpoint" => "requeue", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
         match e {
             PostgresError::JobExists { .. } => {
                 (StatusCode::CONFLICT, e.to_string()).into_response()
@@ -581,7 +581,7 @@ impl Server {
             .route("/v1/queues/:queue/jobs/:id", patch(heartbeat_v1))
             .route("/v1/queues/:queue/jobs/:id", delete(delete_job_v1))
             .route("/v2/queues/jobs", post(enqueue_v2))
-            .route("/v2/queues/:queue/jobs/:id/run-id/:run_id", put(re_enqueue))
+            .route("/v2/queues/:queue/jobs/:id/run-id/:run_id", put(requeue))
             .route("/v2/queues/:queue/jobs", get(next_v2))
             .route("/v2/queues/:queue/jobs/:id", head(exists_v2))
             .route("/v2/queues/:queue/jobs/:id", get(get_job_v2))
