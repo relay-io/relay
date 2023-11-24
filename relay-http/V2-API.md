@@ -69,9 +69,9 @@ NOTE: The body of the response will have more detail about the specific error.
 | 202  | Job(s) enqueued and accepted for processing.                                                            |
 | 400  | A bad/ill-formed request.                                                                               |
 | 409  | An conflicting Job already exists with the provided id and queue. Reminder when enqueue mode is unique. |
-| 429  | A retryable error occurred.                                                                             |
 | 422  | A permanent error has occurred, most likely with the backing datastore.                                 |
 | 500  | An unknown error has occurred server side.                                                              |
+| 503  | A retryable error occurred, maintenance should be  included as retryable.                               |
 
 
 
@@ -176,13 +176,13 @@ This allows for:
 
 NOTE: The body of the response will have more detail about the specific error.
 
-| code | description                                |
-|------|--------------------------------------------|
-| 202  | Job(s) accepted for processing.            |
-| 400  | For a bad/ill-formed request.              |
-| 429  | A retryable error occurred.                |
-| 422  | A permanent error has occurred.            |
-| 500  | An unknown error has occurred server side. |
+| code | description                                                               |
+|------|---------------------------------------------------------------------------|
+| 202  | Job(s) accepted for processing.                                           |
+| 400  | For a bad/ill-formed request.                                             |
+| 422  | A permanent error has occurred.                                           |
+| 500  | An unknown error has occurred server side.                                |
+| 503  | A retryable error occurred, maintenance should be  included as retryable. |
 
 
 ### delete `DELETE /v2/queues/{queues}/jobs/{id}`
@@ -193,12 +193,12 @@ Delete a Job.
 
 NOTE: The body of the response will have more detail about the specific error in plain text.
 
-| code  | description                                                                 |
-|-------|-----------------------------------------------------------------------------|
-| 200   | Job successfully completed.                                                 |
-| 429   | A retryable error occurred. Most likely the backing storage having issues.  |
-| 422   | A permanent error has occurred.                                             |
-| 500   | An unknown error has occurred server side.                                  |
+| code | description                                                               |
+|------|---------------------------------------------------------------------------|
+| 200  | Job successfully completed.                                               |
+| 422  | A permanent error has occurred.                                           |
+| 500  | An unknown error has occurred server side.                                |
+| 503  | A retryable error occurred, maintenance should be  included as retryable. |
 
 
 ### complete `DELETE /v2/queues/{queues}/jobs/{id}/run-id/{run_id}`
@@ -209,12 +209,12 @@ Completes an in-flight Job by deleting it. This differs from deletion in that in
 
 NOTE: The body of the response will have more detail about the specific error in plain text.
 
-| code | description                                                         |
-|------|---------------------------------------------------------------------|
-| 200  | Job successfully completed.                                         |
-| 429  | A retryable error occurred.                                         |
-| 422  | A permanent error has occurred, likely related to the query params. |
-| 500  | An unknown error has occurred server side.                          |
+| code | description                                                               |
+|------|---------------------------------------------------------------------------|
+| 200  | Job successfully completed.                                               |
+| 422  | A permanent error has occurred, likely related to the query params.       |
+| 500  | An unknown error has occurred server side.                                |
+| 503  | A retryable error occurred, maintenance should be  included as retryable. |
 
 
 ### exists `HEAD /v2/queues/{queue}/jobs/{id}`
@@ -225,13 +225,13 @@ Using HTTP response codes returns if the Job exists.
 
 NOTE: The body of the response will have more detail about the specific error in plain text.
 
-| code | description                                                         |
-|------|---------------------------------------------------------------------|
-| 200  | Job exists                                                          |
-| 429  | A retryable error occurred.                                         |
-| 404  | Job was not found and so did not exist.                             |
-| 422  | A permanent error has occurred, likely related to the query params. |
-| 500  | An unknown error has occurred server side.                          |
+| code | description                                                               |
+|------|---------------------------------------------------------------------------|
+| 200  | Job exists                                                                |
+| 404  | Job was not found and so did not exist.                                   |
+| 422  | A permanent error has occurred, likely related to the query params.       |
+| 500  | An unknown error has occurred server side.                                |
+| 503  | A retryable error occurred, maintenance should be  included as retryable. |
 
 
 ### get `GET /v2/queues/{queue}/jobs/{id}`
@@ -259,11 +259,11 @@ Fetches the Job from the database if it exists.
 
 NOTE: The body of the response will have more detail about the specific error in plain text.
 
-| code | description                                |
-|------|--------------------------------------------|
-| 200  | Job found and in the response body.        |
-| 400  | For a bad/ill-formed request.              |
-| 404  | Job was not found.                         |
-| 429  | A retryable error occurred.                |
-| 422  | A permanent error has occurred.            |
-| 500  | An unknown error has occurred server side. |
+| code | description                                                               |
+|------|---------------------------------------------------------------------------|
+| 200  | Job found and in the response body.                                       |
+| 400  | For a bad/ill-formed request.                                             |
+| 404  | Job was not found.                                                        |
+| 422  | A permanent error has occurred.                                           |
+| 500  | An unknown error has occurred server side.                                |
+| 503  | A retryable error occurred, maintenance should be  included as retryable. |

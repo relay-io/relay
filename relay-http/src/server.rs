@@ -49,7 +49,7 @@ async fn enqueue_v2(
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                    (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
                 } else {
                     (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
                 }
@@ -86,7 +86,7 @@ async fn get_job_v2(
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
-                        (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                        (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
                     } else {
                         (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
                     }
@@ -117,7 +117,7 @@ async fn exists_v2(
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
-                        (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                        (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
                     } else {
                         (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
                     }
@@ -151,7 +151,7 @@ async fn heartbeat_v2(
             }
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                    (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
                 } else {
                     (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
                 }
@@ -185,7 +185,7 @@ async fn re_enqueue(
             }
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                    (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
                 } else {
                     (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
                 }
@@ -211,7 +211,7 @@ async fn delete_job_v2(
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                    (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
                 } else {
                     (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
                 }
@@ -237,7 +237,7 @@ async fn complete_job(
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                    (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
                 } else {
                     (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
                 }
@@ -274,7 +274,7 @@ async fn next_v2(
             increment_counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
             if let PostgresError::Backend { .. } = e {
                 if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
+                    (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
                 } else {
                     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
                 }
