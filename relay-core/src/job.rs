@@ -96,7 +96,7 @@ pub struct Existing<P, S> {
     /// currently in-flight being processed.
     pub run_id: Option<Uuid>,
 
-    /// Indicates the time that a job is eligible to be run. Defaults to now if not specified.
+    /// Indicates the time that a job is/was eligible to be run. Defaults to now if not specified.
     pub run_at: DateTime<Utc>,
 
     /// This indicates the last time the job was updated either through enqueue, requeue or
