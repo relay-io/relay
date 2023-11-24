@@ -381,7 +381,7 @@ impl Client {
         .await
     }
 
-    /// Re-queues the an existing in-flight `Existing` job to be run again or spawn a new set of jobs
+    /// Re-queues an existing in-flight `Existing` job to be run again or spawn a new set of jobs
     /// atomically.
     ///
     /// The `Existing` jobs queue, id and `run_id` must match an existing in-flight Job.
