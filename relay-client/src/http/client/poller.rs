@@ -149,7 +149,7 @@ where
     }
 }
 
-pub struct Builder<R, P, S> {
+pub struct Builder<P, S, R> {
     client: Arc<Client>,
     queue: String,
     runner: Arc<R>,
@@ -158,11 +158,11 @@ pub struct Builder<R, P, S> {
     _state: PhantomData<S>,
 }
 
-impl<R, P, S> Builder<R, P, S>
+impl<P, S, R> Builder<P, S, R>
 where
-    R: Runner<P, S> + Send + Sync + 'static,
     P: DeserializeOwned + Send + Sync + 'static,
     S: DeserializeOwned + Send + Sync + 'static,
+    R: Runner<P, S> + Send + Sync + 'static,
 {
     #[inline]
     pub fn new(client: Arc<Client>, queue: &str, runner: R) -> Self {
@@ -188,7 +188,7 @@ where
 
     /// Creates a new `Poller` using the Builders configuration.
     #[inline]
-    pub fn build(self) -> std::result::Result<Poller<R, P, S>, anyhow::Error> {
+    pub fn build(self) -> std::result::Result<Poller<P, S, R>, anyhow::Error> {
         if self.max_workers == 0 {
             return Err(anyhow::anyhow!("max_workers must be greater than 0"));
         }
@@ -204,20 +204,20 @@ where
 }
 
 /// Poller is used to abstract away polling and running multiple `Job`s calling the provided `Fn`.
-pub struct Poller<W, P, S> {
+pub struct Poller<P, S, R> {
     client: Arc<Client>,
     max_workers: usize,
-    runner: Arc<W>,
+    runner: Arc<R>,
     queue: String,
     _payload: PhantomData<P>,
     _state: PhantomData<S>,
 }
 
-impl<R, P, S> Poller<R, P, S>
+impl<P, S, R> Poller<P, S, R>
 where
-    R: Runner<P, S> + Send + Sync + 'static,
     P: DeserializeOwned + Send + Sync + 'static,
     S: DeserializeOwned + Send + Sync + 'static,
+    R: Runner<P, S> + Send + Sync + 'static,
 {
     /// Starts the Relay HTTP Poller/Consumer.
     ///

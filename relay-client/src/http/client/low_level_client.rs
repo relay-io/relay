@@ -445,11 +445,11 @@ impl Client {
     /// Creates a new poller that will handle asynchronously polling and distributing `Existing`
     /// jobs to be processed by calling the supplied `Runner`.
     #[inline]
-    pub fn poller<R, P, S>(self: Arc<Self>, queue: &str, runner: R) -> PollBuilder<R, P, S>
+    pub fn poller<P, S, R>(self: Arc<Self>, queue: &str, runner: R) -> PollBuilder<P, S, R>
     where
-        R: Runner<P, S> + Send + Sync + 'static,
         P: DeserializeOwned + Send + Sync + 'static,
         S: DeserializeOwned + Send + Sync + 'static,
+        R: Runner<P, S> + Send + Sync + 'static,
     {
         PollBuilder::new(self, queue, runner)
     }
