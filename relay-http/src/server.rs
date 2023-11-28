@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_re_enqueue_v2() -> anyhow::Result<()> {
+    async fn test_requeue_v2() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let now = Utc::now()
             .duration_trunc(chrono::Duration::milliseconds(1))

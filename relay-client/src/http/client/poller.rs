@@ -149,11 +149,12 @@ where
     }
 }
 
+/// Is used to configure and build Poller for use.
 pub struct Builder<P, S, R> {
     client: Arc<Client>,
     queue: String,
     runner: Arc<R>,
-    max_workers: usize,
+    num_workers: usize,
     _payload: PhantomData<P>,
     _state: PhantomData<S>,
 }
@@ -168,7 +169,7 @@ where
     pub fn new(client: Arc<Client>, queue: &str, runner: R) -> Self {
         Self {
             client,
-            max_workers: 10,
+            num_workers: 10,
             runner: Arc::new(runner),
             queue: queue.to_string(),
             _payload: PhantomData,
@@ -179,7 +180,7 @@ where
     /// Sets the maximum number of backend async workers indicating the maximum number of in-flight
     /// `Job`s.
     pub const fn max_workers(mut self, max_workers: usize) -> Self {
-        self.max_workers = max_workers;
+        self.num_workers = max_workers;
         self
     }
 
@@ -189,12 +190,12 @@ where
     /// Creates a new `Poller` using the Builders configuration.
     #[inline]
     pub fn build(self) -> std::result::Result<Poller<P, S, R>, anyhow::Error> {
-        if self.max_workers == 0 {
+        if self.num_workers == 0 {
             return Err(anyhow::anyhow!("max_workers must be greater than 0"));
         }
         Ok(Poller {
             client: self.client,
-            max_workers: self.max_workers,
+            num_workers: self.num_workers,
             runner: self.runner,
             queue: self.queue,
             _payload: PhantomData,
@@ -206,7 +207,7 @@ where
 /// Poller is used to abstract away polling and running multiple `Job`s calling the provided `Fn`.
 pub struct Poller<P, S, R> {
     client: Arc<Client>,
-    max_workers: usize,
+    num_workers: usize,
     runner: Arc<R>,
     queue: String,
     _payload: PhantomData<P>,
@@ -228,10 +229,10 @@ where
         &self,
         cancel: impl Future<Output = ()> + Send + 'static,
     ) -> std::result::Result<(), anyhow::Error> {
-        let (tx, rx) = async_channel::bounded(self.max_workers);
-        let (tx_sem, rx_sem) = async_channel::bounded(self.max_workers);
+        let (tx, rx) = async_channel::bounded(self.num_workers);
+        let (tx_sem, rx_sem) = async_channel::bounded(self.num_workers);
 
-        let handles = (0..self.max_workers)
+        let handles = (0..self.num_workers)
             .map(|_| {
                 let rx = rx.clone();
                 let rx_rem = rx_sem.clone();
