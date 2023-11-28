@@ -12,25 +12,6 @@ permissions: read-all
 jobs:
   test:
     runs-on: ubuntu-latest
-#    services:
-#      postgres:
-#        image: postgres:13-alpine
-##        volumes:
-##          - ${{ github.workspace }}/schema:/docker-entrypoint-initdb.d
-#        ports:
-#          - 5432:5432
-#        env:
-#          POSTGRES_USER: username
-#          POSTGRES_PASS: pass
-#          POSTGRES_HOST_AUTH_METHOD: trust
-#          POSTGRES_DB: relay
-##          POSTGRES_MULTIPLE_DATABASES: relay
-#        # Set health checks to wait until postgres has started
-#        options: >-
-#          --health-cmd pg_isready
-#          --health-interval 10s
-#          --health-timeout 5s
-#          --health-retries 5
     steps:
       - uses: actions/checkout@v3
       - uses: isbang/compose-action@v1.5.1
