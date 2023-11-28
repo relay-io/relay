@@ -177,9 +177,9 @@ where
         }
     }
 
-    /// Sets the maximum number of backend async workers indicating the maximum number of in-flight
+    /// Sets the number of backend async workers indicating the maximum number of in-flight
     /// `Job`s.
-    pub const fn max_workers(mut self, max_workers: usize) -> Self {
+    pub const fn num_workers(mut self, max_workers: usize) -> Self {
         self.num_workers = max_workers;
         self
     }
