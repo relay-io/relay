@@ -184,9 +184,6 @@ where
         self
     }
 
-    // TODO: Add immutable middleware like interceptor functions allowing pre or post processing of
-    //       jobs. eg. recording job start and end times, logging, metrics, history.
-
     /// Creates a new `Poller` using the Builders configuration.
     #[inline]
     pub fn build(self) -> std::result::Result<Poller<P, S, R>, anyhow::Error> {
@@ -204,7 +201,7 @@ where
     }
 }
 
-/// Poller is used to abstract away polling and running multiple `Job`s calling the provided `Fn`.
+/// Poller is used to abstract away polling and running multiple `Job`s calling the provided `Runner` function.
 pub struct Poller<P, S, R> {
     client: Arc<Client>,
     num_workers: usize,
