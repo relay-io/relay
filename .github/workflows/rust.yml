@@ -40,7 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.platform }}-v1
-      - run: DATABASE_URL="postgres://username:pass@relay:5432/relay?sslmode=disable" cargo test --all-features --all-targets
+      - run: DATABASE_URL="postgres://username:pass@localhost:5432/relay?sslmode=disable" cargo test --all-features --all-targets
 
   build:
     strategy:
