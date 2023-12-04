@@ -30,6 +30,12 @@ Here is a list of existing clients.
 | [Rust](https://github.com/relay-io/relay/blob/main/relay-http/src/http/client/client.rs) | Rust client and poller/consumer. |
 
 
+#### Example running
+```shell
+~ docker-compose up -d
+~ DATABASE_URL="postgres://username:pass@localhost:5432/relay" HTTP_PORT=8080 RUST_LOG=debug cargo run
+```
+
 #### License
 
 <sup>
