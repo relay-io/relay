@@ -1,0 +1,22 @@
+[package]
+name = "relay-client"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+relay-core.workspace = true
+reqwest = { version = "0.11.22", features = ["rustls-tls", "json"] }
+backoff-rs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+percent-encoding.workspace = true
+async-channel.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["time", "macros","signal"] }
+anyhow.workspace = true
+async-trait.workspace = true
+num_cpus.workspace = true
