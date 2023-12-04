@@ -630,14 +630,19 @@ impl Server {
 mod tests {
     use super::*;
     use anyhow::{anyhow, Context};
+    use async_trait::async_trait;
     use chrono::DurationRound;
     use chrono::Utc;
     use portpicker::pick_unused_port;
-    use relay_client::http::client::{Builder as ClientBuilder, Client, Error as ClientError};
+    use relay_client::http::client::{
+        Builder as ClientBuilder, Client, Error as ClientError, JobHelper, Runner,
+    };
+    use relay_core::job::Existing;
     use relay_core::num::PositiveI32;
     use relay_postgres::PgStore;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
     use std::ops::Add;
+    use std::sync::Mutex;
     use tokio::task::JoinHandle;
     use uuid::Uuid;
 
@@ -703,7 +708,8 @@ mod tests {
 
         let mut j = client
             .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
-            .await?;
+            .await?
+            .unwrap();
         assert!(j.updated_at >= now);
         assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
         assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
@@ -724,7 +730,7 @@ mod tests {
             .heartbeat(&j2.queue, &j2.id, &j2.run_id.unwrap(), Some(3))
             .await?;
 
-        let j = client.get::<(), i32>(&j2.queue, &j2.id).await?;
+        let j = client.get::<(), i32>(&j2.queue, &j2.id).await?.unwrap();
         assert_eq!(j.state, Some(3));
 
         client
@@ -754,7 +760,8 @@ mod tests {
 
         let mut j = client
             .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
-            .await?;
+            .await?
+            .unwrap();
         assert!(j.updated_at >= now);
         assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
         assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
@@ -786,7 +793,7 @@ mod tests {
             )
             .await?;
 
-        let mut j = client.get::<(), i32>(&j2.queue, &j2.id).await?;
+        let mut j = client.get::<(), i32>(&j2.queue, &j2.id).await?.unwrap();
         assert!(j.updated_at >= j2.updated_at);
         assert!(j.created_at >= j2.created_at);
         assert!(j.run_id.is_none());
@@ -826,7 +833,8 @@ mod tests {
 
         let j2 = client
             .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
-            .await?;
+            .await?
+            .unwrap();
         assert!(j2.run_id.is_some());
         assert!(j2.state.is_none());
 
@@ -836,7 +844,8 @@ mod tests {
 
         let j2 = client
             .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
-            .await?;
+            .await?
+            .unwrap();
         assert!(j2.run_id.is_none());
         assert_eq!(j2.state, Some(3));
 
@@ -846,7 +855,8 @@ mod tests {
 
         let j2 = client
             .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
-            .await?;
+            .await?
+            .unwrap();
         assert!(j2.run_id.is_none());
         assert_eq!(j2.state, Some(3));
 
@@ -1104,7 +1114,6 @@ mod tests {
         Ok(())
     }
 
-    // TODO: test enqueue mode for v1 unique vs ignore
     #[tokio::test]
     async fn test_enqueue_modes_job_v1() -> anyhow::Result<()> {
         let (_srv, base_url) = init_server_only().await?;
@@ -1148,6 +1157,151 @@ mod tests {
 
         let resp = client.post(&url).json(&jobs).send().await?;
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_poller() -> anyhow::Result<()> {
+        let (_srv, client) = init_server().await?;
+        let now = Utc::now()
+            .duration_trunc(chrono::Duration::milliseconds(1))
+            .unwrap();
+        let queue = Uuid::new_v4().to_string();
+        let j: New<i32, i32> = New {
+            id: Uuid::new_v4().to_string(),
+            queue: queue.clone(),
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: None,
+            payload: 3,
+            state: None,
+            run_at: Some(now),
+        };
+        let j2: New<i32, i32> = New {
+            id: Uuid::new_v4().to_string(),
+            queue: queue.clone(),
+            timeout: PositiveI32::new(30).unwrap(),
+            max_retries: None,
+            payload: 4,
+            state: None,
+            run_at: Some(now),
+        };
+        let mut jobs = vec![j, j2];
+
+        client.enqueue(EnqueueMode::Unique, &jobs).await?;
+
+        struct mockRunner {
+            helpers: Arc<Mutex<Vec<JobHelper<i32, i32>>>>,
+            done: tokio::sync::mpsc::Sender<()>,
+        }
+
+        #[async_trait]
+        impl Runner<i32, i32> for mockRunner {
+            async fn run(&self, helper: JobHelper<i32, i32>) {
+                let mut l = 0;
+                {
+                    let mut lock = self.helpers.lock().unwrap();
+                    lock.push(helper);
+                    l = lock.len();
+                }
+                if l == 2 {
+                    self.done.send(()).await.unwrap();
+                }
+            }
+        }
+
+        let helpers = Arc::new(Mutex::new(Vec::new()));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+        let mr = mockRunner {
+            helpers: helpers.clone(),
+            done: tx,
+        };
+        let p = client.poller(&queue, mr).num_workers(1).build().unwrap();
+        let r = p
+            .start(async move {
+                let _ = rx.recv().await;
+            })
+            .await;
+        assert!(r.is_ok());
+
+        let helpers = helpers.lock().unwrap();
+        assert_eq!(helpers.len(), 2);
+
+        let jh1 = helpers.first().unwrap();
+        let jh2 = helpers.last().unwrap();
+        assert_eq!(jh1.job().queue, queue);
+        assert_eq!(jh1.job().id, jobs.first().unwrap().id);
+        assert_eq!(jh1.job().payload, jobs.first().unwrap().payload);
+        assert_eq!(jh2.job().queue, queue);
+        assert_eq!(jh2.job().id, jobs.last().unwrap().id);
+        assert_eq!(jh2.job().payload, jobs.last().unwrap().payload);
+
+        jh2.complete().await?;
+        assert!(!jh2.exists().await?);
+        jh1.heartbeat(Some(5)).await?;
+
+        let maybe_ej: Option<Existing<i32, i32>> = jh1
+            .inner_client()
+            .get(&jh1.job().queue, &jh1.job().id)
+            .await?;
+        assert!(maybe_ej.is_some());
+
+        let existing = maybe_ej.unwrap();
+        assert_eq!(existing.state, Some(5));
+        assert_eq!(existing.run_id, jh1.job().run_id);
+
+        jobs.first_mut().unwrap().state = Some(6);
+        jobs.truncate(1);
+
+        jh1.requeue(EnqueueMode::Unique, &jobs).await?;
+
+        let maybe_ej: Option<Existing<i32, i32>> = jh1
+            .inner_client()
+            .get(&jh1.job().queue, &jh1.job().id)
+            .await?;
+        assert!(maybe_ej.is_some());
+
+        let existing = maybe_ej.unwrap();
+        assert_eq!(existing.state, Some(6));
+        assert!(existing.run_id.is_none());
+
+        jh1.delete().await?;
+        assert!(!jh1.exists().await?);
+
+        //
+        // let exists = client
+        //     .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+        //     .await?;
+        // assert!(exists);
+        //
+        // let mut j = client
+        //     .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+        //     .await?;
+        // assert!(j.updated_at >= now);
+        // assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
+        // assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
+        // assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
+        //
+        // let mut jobs = client
+        //     .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
+        //     .await?;
+        // assert_eq!(jobs.len(), 1);
+        //
+        // let j2 = jobs.pop().unwrap();
+        // j.updated_at = j2.updated_at;
+        // j.run_id = j2.run_id;
+        // assert_eq!(j2, j);
+        // assert!(j2.run_id.is_some());
+        //
+        // client
+        //     .heartbeat(&j2.queue, &j2.id, &j2.run_id.unwrap(), Some(3))
+        //     .await?;
+        //
+        // let j = client.get::<(), i32>(&j2.queue, &j2.id).await?;
+        // assert_eq!(j.state, Some(3));
+        //
+        // client
+        //     .complete(&j2.queue, &j2.id, &j2.run_id.unwrap())
+        //     .await?;
         Ok(())
     }
 }

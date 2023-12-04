@@ -33,7 +33,8 @@ uuid = { version = "1.5.0" }
 percent-encoding = "2.3.0"
 async-channel = "2.1.0"
 relay-core = { version = "*", path = "./relay-core" }
-num_cpus = "1.13.0"
+num_cpus = "1.16.0"
+async-trait = { version = "0.1.74" }
 
 [profile.release]
 lto = true

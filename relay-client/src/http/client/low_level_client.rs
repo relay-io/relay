@@ -257,7 +257,7 @@ impl Client {
     /// Will return `Err` on:
     /// - an unrecoverable network error.
     /// - if the `Job` doesn't exist.
-    pub async fn get<P, S>(&self, queue: &str, job_id: &str) -> Result<Existing<P, S>>
+    pub async fn get<P, S>(&self, queue: &str, job_id: &str) -> Result<Option<Existing<P, S>>>
     where
         P: DeserializeOwned,
         S: DeserializeOwned,
@@ -271,18 +271,18 @@ impl Client {
 
         self.with_retry(|| async {
             let res = self.client.get(&url).send().await?;
-            let status_code = res.status();
-
-            if status_code == StatusCode::OK {
-                Ok(res.json().await?)
-            } else {
-                res.error_for_status()?;
-                Err(Error::Request {
-                    status_code: Some(status_code),
-                    is_retryable: false,
-                    is_poll: false,
-                    message: "unexpected HTTP response code".to_string(),
-                })
+            match res.status() {
+                StatusCode::OK => Ok(Some(res.json().await?)),
+                StatusCode::NOT_FOUND => Ok(None),
+                sc => {
+                    res.error_for_status()?;
+                    Err(Error::Request {
+                        status_code: Some(sc),
+                        is_retryable: false,
+                        is_poll: false,
+                        message: "unexpected HTTP response code".to_string(),
+                    })
+                }
             }
         })
         .await
