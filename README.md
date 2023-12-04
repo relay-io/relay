@@ -21,8 +21,8 @@ See details for each crate.
 |----------------------------------------------|----------------------------------------------|-------------------|
 | [relay](./relay/README.md)                   | A simple, no-nonsense, stateless job runner. | AGPL-3.0-or-later |
 | [relay-core](./relay-core/README.md)         | Contains all core shared code and logic.     | MIT OR Apache-2.0 |
-| [relay-http](./relay-http/README.md)         | HTTP frontend for Relay.                     | MIT OR Apache-2.0 |
-| [relay-client](./relay-client/README.md)     | Relay client for Rely frontends.             | AGPL-3.0-or-later |          
+| [relay-http](./relay-http/README.md)         | HTTP frontend for Relay.                     | AGPL-3.0-or-later |
+| [relay-client](./relay-client/README.md)     | Relay client for Rely frontends.             | MIT OR Apache-2.0 |          
 | [relay-postgres](./relay-postgres/README.md) | Postgres backend for Relay.                  | AGPL-3.0-or-later |
 
 
