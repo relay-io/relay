@@ -42,6 +42,7 @@ So the API is backward compatible, but some database changes are not, please rea
 - `queue` and `id` columns are now restricted to `1024 characters` to limit the index sizes, prevent hitting max index size in PG and leave some overhead for future improvements.
 - `max_retries` becomes nullable which now represents infinite retries. Any previous < 0 will be set to null during the migration.
 - `max_retries` has also been changed to be a `smallint` and now has a maximum value of `32767` which is more than enough for most use cases.
+- `timeout` and `max_retries` will now be validated to be >= 0, which they always should be.
 
 
 #### License
