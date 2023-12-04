@@ -169,7 +169,7 @@ where
     pub fn new(client: Arc<Client>, queue: &str, runner: R) -> Self {
         Self {
             client,
-            num_workers: 10,
+            num_workers: num_cpus::get(),
             runner: Arc::new(runner),
             queue: queue.to_string(),
             _payload: PhantomData,
@@ -179,8 +179,10 @@ where
 
     /// Sets the number of backend async workers indicating the maximum number of in-flight
     /// `Job`s.
-    pub const fn num_workers(mut self, max_workers: usize) -> Self {
-        self.num_workers = max_workers;
+    ///
+    /// Default is number of logical cores on the machine.
+    pub const fn num_workers(mut self, num_workers: usize) -> Self {
+        self.num_workers = num_workers;
         self
     }
 

@@ -19,3 +19,4 @@ uuid.workspace = true
 tokio = { workspace = true, features = ["time", "macros","signal"] }
 anyhow.workspace = true
 async-trait = { version = "0.1.74" }
+num_cpus.workspace = true
