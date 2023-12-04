@@ -642,7 +642,7 @@ mod tests {
     use relay_postgres::PgStore;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
     use std::ops::Add;
-    use std::sync::Mutex;
+    use tokio::sync::Mutex;
     use tokio::task::JoinHandle;
     use uuid::Uuid;
 
@@ -1189,26 +1189,6 @@ mod tests {
 
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
 
-        struct mockRunner {
-            helpers: Arc<Mutex<Vec<JobHelper<i32, i32>>>>,
-            done: tokio::sync::mpsc::Sender<()>,
-        }
-
-        #[async_trait]
-        impl Runner<i32, i32> for mockRunner {
-            async fn run(&self, helper: JobHelper<i32, i32>) {
-                let mut l = 0;
-                {
-                    let mut lock = self.helpers.lock().unwrap();
-                    lock.push(helper);
-                    l = lock.len();
-                }
-                if l == 2 {
-                    self.done.send(()).await.unwrap();
-                }
-            }
-        }
-
         let helpers = Arc::new(Mutex::new(Vec::new()));
         let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
         let mr = mockRunner {
@@ -1223,7 +1203,7 @@ mod tests {
             .await;
         assert!(r.is_ok());
 
-        let helpers = helpers.lock().unwrap();
+        let helpers = helpers.lock().await;
         assert_eq!(helpers.len(), 2);
 
         let jh1 = helpers.first().unwrap();
@@ -1267,5 +1247,25 @@ mod tests {
         jh1.delete().await?;
         assert!(!jh1.exists().await?);
         Ok(())
+    }
+
+    struct mockRunner {
+        helpers: Arc<Mutex<Vec<JobHelper<i32, i32>>>>,
+        done: tokio::sync::mpsc::Sender<()>,
+    }
+
+    #[async_trait]
+    impl Runner<i32, i32> for mockRunner {
+        async fn run(&self, helper: JobHelper<i32, i32>) {
+            let mut l = 0;
+            {
+                let mut lock = self.helpers.lock().await;
+                lock.push(helper);
+                l = lock.len();
+            }
+            if l == 2 {
+                self.done.send(()).await.unwrap();
+            }
+        }
     }
 }
