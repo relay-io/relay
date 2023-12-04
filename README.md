@@ -25,6 +25,25 @@ See details for each crate.
 | [relay-client](./relay-client/README.md)     | Relay client for Rely frontends.             | AGPL-3.0-or-later |          
 | [relay-postgres](./relay-postgres/README.md) | Postgres backend for Relay.                  | AGPL-3.0-or-later |
 
+
+### Migration v1 -> v2
+The v2 release of Relay is a complete rewrite of the v1 release, while maintaining backward compatibility with the v1 API.
+
+The original v1 Relay [here](https://github.com/rust-playground/relay-rs) was running flawlessly in production for over 
+a year. The main reason for a v2 was to add some additional features making it easier interacting with in-flight jobs, 
+but improvements also include:
+- Allowing updating of in-flight jobs leveraging the new `run_id` so that already in-flight job interactions will cease upon the next interaction with the Relay server.
+- Added `requeue` endpoint, replacing the old reschedule, to allow not only rescheduling but also atomically creating new even unrelated jobs.
+- Added enqueue + requeue mode to better chose guarantees when creating/recreating/replacing jobs.
+
+
+So the API is backward compatible, but some database changes are not, please read this carefully before upgrading. 
+- It is recommended to back up your database prior to migrating just in case.
+- `queue` and `id` columns are now restricted to `1024 characters` to limit the index sizes, prevent hitting max index size in PG and leave some overhead for future improvements.
+- `max_retries` becomes nullable which now represents infinite retries. Any previous < 0 will be set to null during the migration.
+- `max_retries` has also been changed to be a `smallint` and now has a maximum value of `32767` which is more than enough for most use cases.
+
+
 #### License
 
 Unless otherwise explicitly stated the below license applies to all code.
