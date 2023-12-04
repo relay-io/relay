@@ -1266,42 +1266,6 @@ mod tests {
 
         jh1.delete().await?;
         assert!(!jh1.exists().await?);
-
-        //
-        // let exists = client
-        //     .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
-        //     .await?;
-        // assert!(exists);
-        //
-        // let mut j = client
-        //     .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
-        //     .await?;
-        // assert!(j.updated_at >= now);
-        // assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
-        // assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
-        // assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
-        //
-        // let mut jobs = client
-        //     .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
-        //     .await?;
-        // assert_eq!(jobs.len(), 1);
-        //
-        // let j2 = jobs.pop().unwrap();
-        // j.updated_at = j2.updated_at;
-        // j.run_id = j2.run_id;
-        // assert_eq!(j2, j);
-        // assert!(j2.run_id.is_some());
-        //
-        // client
-        //     .heartbeat(&j2.queue, &j2.id, &j2.run_id.unwrap(), Some(3))
-        //     .await?;
-        //
-        // let j = client.get::<(), i32>(&j2.queue, &j2.id).await?;
-        // assert_eq!(j.state, Some(3));
-        //
-        // client
-        //     .complete(&j2.queue, &j2.id, &j2.run_id.unwrap())
-        //     .await?;
         Ok(())
     }
 }
