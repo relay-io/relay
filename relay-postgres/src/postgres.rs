@@ -268,37 +268,7 @@ impl PgStore {
             .await?;
 
         let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
-        let job = row.as_ref().map(|row| Existing {
-            id: row.get(0),
-            queue: row.get(1),
-            timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2)))
-                .unwrap_or_else(|| {
-                    warn!("invalid timeout value, defaulting to 30s");
-                    unsafe { PositiveI32::new_unchecked(30) }
-                }),
-            max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
-                PositiveI16::new(i).unwrap_or_else(|| {
-                    warn!("invalid max_retries value, defaulting to 0");
-                    unsafe { PositiveI16::new_unchecked(0) }
-                })
-            }),
-            retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
-                PositiveI16::new(i).unwrap_or_else(|| {
-                    warn!("invalid max_retries value, defaulting to 0");
-                    unsafe { PositiveI16::new_unchecked(0) }
-                })
-            }),
-            payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
-            state: row
-                .get::<usize, Option<Json<Box<RawValue>>>>(6)
-                .map(|state| match state {
-                    Json(state) => state,
-                }),
-            run_id: row.get(7),
-            run_at: Utc.from_utc_datetime(&row.get(8)),
-            updated_at: Utc.from_utc_datetime(&row.get(9)),
-            created_at: Utc.from_utc_datetime(&row.get(10)),
-        });
+        let job = row.as_ref().map(row_to_job);
 
         increment_counter!("get", "queue" => queue.to_owned());
         debug!("got job");
@@ -405,37 +375,7 @@ impl PgStore {
 
         while let Some(row) = stream.next().await {
             let row = row?;
-            let j = Existing {
-                id: row.get(0),
-                queue: row.get(1),
-                timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2)))
-                    .unwrap_or_else(|| {
-                        warn!("invalid timeout value, defaulting to 30s");
-                        unsafe { PositiveI32::new_unchecked(30) }
-                    }),
-                max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
-                    PositiveI16::new(i).unwrap_or_else(|| {
-                        warn!("invalid max_retries value, defaulting to 0");
-                        unsafe { PositiveI16::new_unchecked(0) }
-                    })
-                }),
-                retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
-                    PositiveI16::new(i).unwrap_or_else(|| {
-                        warn!("invalid max_retries value, defaulting to 0");
-                        unsafe { PositiveI16::new_unchecked(0) }
-                    })
-                }),
-                payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
-                state: row
-                    .get::<usize, Option<Json<Box<RawValue>>>>(6)
-                    .map(|state| match state {
-                        Json(state) => state,
-                    }),
-                run_id: row.get(7),
-                run_at: Utc.from_utc_datetime(&row.get(8)),
-                updated_at: Utc.from_utc_datetime(&row.get(9)),
-                created_at: Utc.from_utc_datetime(&row.get(10)),
-            };
+            let j = row_to_job(&row);
 
             let updated_at = Utc.from_utc_datetime(&row.get(11));
             // using updated_at because this handles:
@@ -874,6 +814,41 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
         }
     };
     Ok(stmt)
+}
+
+fn row_to_job(row: &Row) -> Existing {
+    Existing {
+        id: row.get(0),
+        queue: row.get(1),
+        timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2))).unwrap_or_else(
+            || {
+                warn!("invalid timeout value, defaulting to 30s");
+                unsafe { PositiveI32::new_unchecked(30) }
+            },
+        ),
+        max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
+            PositiveI16::new(i).unwrap_or_else(|| {
+                warn!("invalid max_retries value, defaulting to 0");
+                unsafe { PositiveI16::new_unchecked(0) }
+            })
+        }),
+        retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
+            PositiveI16::new(i).unwrap_or_else(|| {
+                warn!("invalid max_retries value, defaulting to 0");
+                unsafe { PositiveI16::new_unchecked(0) }
+            })
+        }),
+        payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
+        state: row
+            .get::<usize, Option<Json<Box<RawValue>>>>(6)
+            .map(|state| match state {
+                Json(state) => state,
+            }),
+        run_id: row.get(7),
+        run_at: Utc.from_utc_datetime(&row.get(8)),
+        updated_at: Utc.from_utc_datetime(&row.get(9)),
+        created_at: Utc.from_utc_datetime(&row.get(10)),
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
