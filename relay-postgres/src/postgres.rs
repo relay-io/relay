@@ -353,7 +353,7 @@ impl PgStore {
                          j.run_at,
                          j.updated_at,
                          j.created_at,
-                         subquery.updated_at
+                         subquery.updated_at as subquery_updated_at
             ",
             )
             .await?;
