@@ -378,13 +378,18 @@ impl PgStore {
             let j = row_to_job(&row);
 
             let updated_at = Utc.from_utc_datetime(&row.get(11));
-            // using updated_at because this handles:
+            let to_processed = if updated_at > j.run_at {
+                updated_at
+            } else {
+                j.run_at
+            };
+            // using to_processed because this handles:
             // - enqueue -> processing
             // - reschedule -> processing
             // - reaped -> processing
             // This is a possible indicator not enough consumers/processors on the calling side
             // and jobs are backed up for processing.
-            if let Ok(d) = (now - updated_at).to_std() {
+            if let Ok(d) = (now - to_processed).to_std() {
                 histogram!("latency", d, "queue" => j.queue.clone(), "type" => "to_processing");
             }
 
