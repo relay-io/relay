@@ -322,7 +322,8 @@ impl PgStore {
                WITH subquery AS (
                    SELECT
                         id,
-                        queue
+                        queue,
+                        updated_at
                    FROM jobs
                    WHERE
                         queue=$1 AND
@@ -351,11 +352,13 @@ impl PgStore {
                          j.run_id,
                          j.run_at,
                          j.updated_at,
-                         j.created_at
+                         j.created_at,
+                         subquery.updated_at as subquery_updated_at
             ",
             )
             .await?;
 
+        let now = Utc::now();
         let limit = num_jobs.as_ref();
         let params: Vec<&(dyn ToSql + Sync)> = vec![&queue, limit];
         let stream = client.query_raw(&stmt, params).await?;
@@ -371,24 +374,27 @@ impl PgStore {
         };
 
         while let Some(row) = stream.next().await {
-            jobs.push(row_to_job(&row?));
+            let row = row?;
+            let j = row_to_job(&row);
+
+            let updated_at = Utc.from_utc_datetime(&row.get(11));
+            // using updated_at because this handles:
+            // - enqueue -> processing
+            // - reschedule -> processing
+            // - reaped -> processing
+            // This is a possible indicator not enough consumers/processors on the calling side
+            // and jobs are backed up for processing.
+            if let Ok(d) = (now - updated_at).to_std() {
+                histogram!("latency", d, "queue" => j.queue.clone(), "type" => "to_processing");
+            }
+
+            jobs.push(j);
         }
 
         if jobs.is_empty() {
             debug!("fetched no jobs");
             Ok(None)
         } else {
-            for job in &jobs {
-                // using updated_at because this handles:
-                // - enqueue -> processing
-                // - reschedule -> processing
-                // - reaped -> processing
-                // This is a possible indicator not enough consumers/processors on the calling side
-                // and jobs are backed up for processing.
-                if let Ok(d) = (Utc::now() - job.updated_at).to_std() {
-                    histogram!("latency", d, "queue" => job.queue.clone(), "type" => "to_processing");
-                }
-            }
             counter!("fetched", jobs.len() as u64, "queue" => queue.to_owned());
             debug!(fetched_jobs = jobs.len(), "fetched next job(s)");
             Ok(Some(jobs))
