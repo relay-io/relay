@@ -268,7 +268,37 @@ impl PgStore {
             .await?;
 
         let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
-        let job = row.as_ref().map(row_to_job);
+        let job = row.as_ref().map(|row| Existing {
+            id: row.get(0),
+            queue: row.get(1),
+            timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2)))
+                .unwrap_or_else(|| {
+                    warn!("invalid timeout value, defaulting to 30s");
+                    unsafe { PositiveI32::new_unchecked(30) }
+                }),
+            max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
+                PositiveI16::new(i).unwrap_or_else(|| {
+                    warn!("invalid max_retries value, defaulting to 0");
+                    unsafe { PositiveI16::new_unchecked(0) }
+                })
+            }),
+            retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
+                PositiveI16::new(i).unwrap_or_else(|| {
+                    warn!("invalid max_retries value, defaulting to 0");
+                    unsafe { PositiveI16::new_unchecked(0) }
+                })
+            }),
+            payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
+            state: row
+                .get::<usize, Option<Json<Box<RawValue>>>>(6)
+                .map(|state| match state {
+                    Json(state) => state,
+                }),
+            run_id: row.get(7),
+            run_at: Utc.from_utc_datetime(&row.get(8)),
+            updated_at: Utc.from_utc_datetime(&row.get(9)),
+            created_at: Utc.from_utc_datetime(&row.get(10)),
+        });
 
         increment_counter!("get", "queue" => queue.to_owned());
         debug!("got job");
@@ -322,7 +352,8 @@ impl PgStore {
                WITH subquery AS (
                    SELECT
                         id,
-                        queue
+                        queue,
+                        updated_at
                    FROM jobs
                    WHERE
                         queue=$1 AND
@@ -351,11 +382,13 @@ impl PgStore {
                          j.run_id,
                          j.run_at,
                          j.updated_at,
-                         j.created_at
+                         j.created_at,
+                         subquery.updated_at
             ",
             )
             .await?;
 
+        let now = Utc::now();
         let limit = num_jobs.as_ref();
         let params: Vec<&(dyn ToSql + Sync)> = vec![&queue, limit];
         let stream = client.query_raw(&stmt, params).await?;
@@ -371,24 +404,57 @@ impl PgStore {
         };
 
         while let Some(row) = stream.next().await {
-            jobs.push(row_to_job(&row?));
+            let row = row?;
+            let j = Existing {
+                id: row.get(0),
+                queue: row.get(1),
+                timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2)))
+                    .unwrap_or_else(|| {
+                        warn!("invalid timeout value, defaulting to 30s");
+                        unsafe { PositiveI32::new_unchecked(30) }
+                    }),
+                max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
+                    PositiveI16::new(i).unwrap_or_else(|| {
+                        warn!("invalid max_retries value, defaulting to 0");
+                        unsafe { PositiveI16::new_unchecked(0) }
+                    })
+                }),
+                retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
+                    PositiveI16::new(i).unwrap_or_else(|| {
+                        warn!("invalid max_retries value, defaulting to 0");
+                        unsafe { PositiveI16::new_unchecked(0) }
+                    })
+                }),
+                payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
+                state: row
+                    .get::<usize, Option<Json<Box<RawValue>>>>(6)
+                    .map(|state| match state {
+                        Json(state) => state,
+                    }),
+                run_id: row.get(7),
+                run_at: Utc.from_utc_datetime(&row.get(8)),
+                updated_at: Utc.from_utc_datetime(&row.get(9)),
+                created_at: Utc.from_utc_datetime(&row.get(10)),
+            };
+
+            let updated_at = Utc.from_utc_datetime(&row.get(11));
+            // using updated_at because this handles:
+            // - enqueue -> processing
+            // - reschedule -> processing
+            // - reaped -> processing
+            // This is a possible indicator not enough consumers/processors on the calling side
+            // and jobs are backed up for processing.
+            if let Ok(d) = (now - updated_at).to_std() {
+                histogram!("latency", d, "queue" => j.queue.clone(), "type" => "to_processing");
+            }
+
+            jobs.push(j);
         }
 
         if jobs.is_empty() {
             debug!("fetched no jobs");
             Ok(None)
         } else {
-            for job in &jobs {
-                // using updated_at because this handles:
-                // - enqueue -> processing
-                // - reschedule -> processing
-                // - reaped -> processing
-                // This is a possible indicator not enough consumers/processors on the calling side
-                // and jobs are backed up for processing.
-                if let Ok(d) = (Utc::now() - job.updated_at).to_std() {
-                    histogram!("latency", d, "queue" => job.queue.clone(), "type" => "to_processing");
-                }
-            }
             counter!("fetched", jobs.len() as u64, "queue" => queue.to_owned());
             debug!(fetched_jobs = jobs.len(), "fetched next job(s)");
             Ok(Some(jobs))
@@ -808,41 +874,6 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
         }
     };
     Ok(stmt)
-}
-
-fn row_to_job(row: &Row) -> Existing {
-    Existing {
-        id: row.get(0),
-        queue: row.get(1),
-        timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2))).unwrap_or_else(
-            || {
-                warn!("invalid timeout value, defaulting to 30s");
-                unsafe { PositiveI32::new_unchecked(30) }
-            },
-        ),
-        max_retries: row.get::<usize, Option<i16>>(3).map(|i| {
-            PositiveI16::new(i).unwrap_or_else(|| {
-                warn!("invalid max_retries value, defaulting to 0");
-                unsafe { PositiveI16::new_unchecked(0) }
-            })
-        }),
-        retries_remaining: row.get::<usize, Option<i16>>(4).map(|i| {
-            PositiveI16::new(i).unwrap_or_else(|| {
-                warn!("invalid max_retries value, defaulting to 0");
-                unsafe { PositiveI16::new_unchecked(0) }
-            })
-        }),
-        payload: row.get::<usize, Json<Box<RawValue>>>(5).0,
-        state: row
-            .get::<usize, Option<Json<Box<RawValue>>>>(6)
-            .map(|state| match state {
-                Json(state) => state,
-            }),
-        run_id: row.get(7),
-        run_at: Utc.from_utc_datetime(&row.get(8)),
-        updated_at: Utc.from_utc_datetime(&row.get(9)),
-        created_at: Utc.from_utc_datetime(&row.get(10)),
-    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
