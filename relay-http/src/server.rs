@@ -630,7 +630,6 @@ impl Server {
 mod tests {
     use super::*;
     use anyhow::{anyhow, Context};
-    use async_trait::async_trait;
     use chrono::DurationRound;
     use chrono::Utc;
     use portpicker::pick_unused_port;
@@ -1254,7 +1253,6 @@ mod tests {
         done: tokio::sync::mpsc::Sender<()>,
     }
 
-    #[async_trait]
     impl Runner<i32, i32> for mockRunner {
         async fn run(&self, helper: JobHelper<i32, i32>) {
             let mut l = 0;

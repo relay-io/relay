@@ -1,6 +1,6 @@
 [package]
 name = "relay-client"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 authors.workspace = true
 description.workspace = true
@@ -18,5 +18,4 @@ thiserror.workspace = true
 uuid.workspace = true
 tokio = { workspace = true, features = ["time", "macros","signal"] }
 anyhow.workspace = true
-async-trait.workspace = true
 num_cpus.workspace = true
