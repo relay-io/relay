@@ -18,8 +18,8 @@ serde_json = { workspace = true, features = ["raw_value"] }
 tracing.workspace = true
 metrics.workspace = true
 percent-encoding.workspace = true
-axum = { version = "0.6.20", default-features = false, features = ["http1", "http2", "json","matched-path","original-uri","query","tokio","tower-log"] }
-tower-http = { version = "0.4.4", features = ["trace"] }
+axum = { version = "0.7.3", default-features = false, features = ["http1", "http2", "json","matched-path","original-uri","query","tokio","tower-log"] }
+tower-http = { version = "0.5.0", features = ["trace"] }
 uuid = { workspace = true, features = ["v4"] }
 relay-postgres = { version = "*", path="../relay-postgres"}
 reqwest = "0.11.22"

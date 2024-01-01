@@ -1,5 +1,5 @@
 //! The HTTP server for the relay.
-use axum::body::{Body, BoxBody};
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -14,6 +14,7 @@ use serde_json::value::RawValue;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing::{info, span, Level, Span};
 use uuid::Uuid;
@@ -559,12 +560,12 @@ impl Server {
     #[inline]
     pub async fn run<F>(backend: Arc<PgStore>, addr: &str, shutdown: F) -> anyhow::Result<()>
     where
-        F: Future<Output = ()>,
+        F: Future<Output = ()> + Send + 'static,
     {
         let app = Server::init_app(backend);
+        let listener = TcpListener::bind(addr).await?;
 
-        axum::Server::bind(&addr.parse().unwrap())
-            .serve(app.into_make_service())
+        axum::serve(listener, app)
             .with_graceful_shutdown(shutdown)
             .await
             .unwrap();
@@ -612,15 +613,13 @@ impl Server {
                             version = ?request.version(),
                         )
                     })
-                    .on_response(
-                        |response: &Response<BoxBody>, latency: Duration, _span: &Span| {
-                            info!(
-                                target: "response",
-                                status = response.status().as_u16(),
-                                latency = ?latency,
-                            );
-                        },
-                    ),
+                    .on_response(|response: &Response, latency: Duration, _span: &Span| {
+                        info!(
+                            target: "response",
+                            status = response.status().as_u16(),
+                            latency = ?latency,
+                        );
+                    }),
             )
             .with_state(backend)
     }
@@ -639,7 +638,7 @@ mod tests {
     use relay_core::job::Existing;
     use relay_core::num::PositiveI32;
     use relay_postgres::PgStore;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::ops::Add;
     use tokio::sync::Mutex;
     use tokio::task::JoinHandle;
@@ -667,11 +666,10 @@ mod tests {
         let socket_address =
             new_random_socket_addr().expect("Cannot create socket address for use");
         let listener = TcpListener::bind(socket_address)
+            .await
             .with_context(|| "Failed to create TCPListener for TestServer")?;
         let server_address = socket_address.to_string();
-        let server = axum::Server::from_tcp(listener)
-            .with_context(|| "Failed to create ::axum::Server for TestServer")?
-            .serve(app.into_make_service());
+        let server = axum::serve(listener, app);
 
         let server_thread = tokio::spawn(async move {
             server.await.expect("Expect server to start serving");
@@ -982,7 +980,7 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/jobs");
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
@@ -990,7 +988,7 @@ mod tests {
             &jobs.first().unwrap().id
         );
         let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::OK.as_u16());
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
@@ -1023,7 +1021,7 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
         let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND.as_u16());
 
         Ok(())
     }
@@ -1060,7 +1058,7 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/jobs");
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
@@ -1068,7 +1066,7 @@ mod tests {
             &jobs.first().unwrap().id
         );
         let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::OK.as_u16());
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
@@ -1108,7 +1106,7 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
         let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND.as_u16());
 
         Ok(())
     }
@@ -1145,17 +1143,17 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/jobs");
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
 
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.status(), StatusCode::CONFLICT.as_u16());
 
         // test sending more than one and will be ignored
         let job = jobs.pop().unwrap();
         let jobs = vec![job.clone(), job.clone()];
 
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
         Ok(())
     }
 
