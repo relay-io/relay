@@ -1,7 +1,6 @@
 use crate::http::client::{Client, Result};
 use anyhow::Context;
 use async_channel::{Receiver, Sender};
-use async_trait::async_trait;
 use relay_core::job::{EnqueueMode, Existing, New};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -10,7 +9,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::{select, task};
 
-#[async_trait]
 /// Runner is a trait used by the `Poller` to execute a `Job` after fetching it to be processed.
 pub trait Runner<P, S> {
     /// Runs the provided `Job` and returns a `Result` indicating if the `Job` was successfully.
@@ -18,7 +16,7 @@ pub trait Runner<P, S> {
     /// Relay currently does nothing with the returned `Result` but is intended to be used by the
     /// post processing middleware for extending the pollers functionality such as recording job
     /// history.
-    async fn run(&self, helper: JobHelper<P, S>);
+    fn run(&self, helper: JobHelper<P, S>) -> impl Future<Output = ()> + Send;
 }
 
 /// Is used to provide a `Existing` job and Relay client instance to the `Runner` for processing.

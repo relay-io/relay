@@ -20,7 +20,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use relay_postgres::PgStore;
@@ -148,10 +148,10 @@ async fn shutdown_signal() {
     let mut quit = signal(SignalKind::quit()).expect("Expect shutdown signal");
 
     tokio::select! {
-        _ = interrupt.recv() => debug!("Received SIGINT"),
-        _ = terminate.recv() => debug!("Received SIGTERM"),
-        _ = hangup.recv() => debug!("Received SIGHUP"),
-        _ = quit.recv() => debug!("Received SIGQUIT"),
+        _ = interrupt.recv() => info!("Received SIGINT"),
+        _ = terminate.recv() => info!("Received SIGTERM"),
+        _ = hangup.recv() => info!("Received SIGHUP"),
+        _ = quit.recv() => info!("Received SIGQUIT"),
     }
     info!("received shutdown signal");
 }
