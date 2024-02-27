@@ -9,16 +9,18 @@ use metrics::{counter, histogram};
 use pg_interval::Interval;
 use relay_core::job::{EnqueueMode, Existing as RelayExisting, New as RelayNew};
 use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
-use rustls::client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier};
-use rustls::{Certificate, OwnedTrustAnchor, RootCertStore, ServerName};
+use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
 use serde_json::value::RawValue;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
 use std::io::ErrorKind;
 use std::sync::Arc;
-use std::time::SystemTime;
 use std::{str::FromStr, time::Duration};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::client::WebPkiServerVerifier;
+use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
+use rustls::pki_types::{CertificateDer, ServerName, TrustAnchor, UnixTime};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::{Json, ToSql};
 use tokio_postgres::{Config as PostgresConfig, Row, Statement};
@@ -91,7 +93,7 @@ impl PgStore {
             pg_config.application_name("relay");
         }
 
-        let tls_config_defaults = rustls::ClientConfig::builder().with_safe_defaults();
+        let tls_config_defaults = rustls::ClientConfig::builder().dangerous();
 
         let tls_config = if accept_invalid_certs {
             tls_config_defaults
@@ -99,21 +101,20 @@ impl PgStore {
                 .with_no_client_auth()
         } else {
             let mut cert_store = RootCertStore::empty();
-            cert_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
+            cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| TrustAnchor {
+                subject: ta.subject.clone(),
+                subject_public_key_info: ta.subject_public_key_info.clone(),
+                name_constraints: ta.name_constraints.clone(),
             }));
 
             if accept_invalid_hostnames {
-                let verifier = WebPkiVerifier::new(cert_store, None);
+                let verifier = WebPkiServerVerifier::builder(Arc::new(cert_store)).build()?;
                 tls_config_defaults
                     .with_custom_certificate_verifier(Arc::new(NoHostnameTlsVerifier { verifier }))
                     .with_no_client_auth()
             } else {
                 tls_config_defaults
+                    .cfg
                     .with_root_certificates(cert_store)
                     .with_no_client_auth()
             }
@@ -926,49 +927,89 @@ fn is_retryable(e: tokio_postgres::Error) -> bool {
     }
 }
 
+#[derive(Debug)]
 struct AcceptAllTlsVerifier;
 
 impl ServerCertVerifier for AcceptAllTlsVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &Certificate,
-        _intermediates: &[Certificate],
-        _server_name: &ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
-        _ocsp_response: &[u8],
-        _now: SystemTime,
-    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+    fn verify_server_cert(&self, end_entity: &CertificateDer<'_>, intermediates: &[CertificateDer<'_>], server_name: &ServerName<'_>, ocsp_response: &[u8], now: UnixTime) -> std::result::Result<ServerCertVerified, rustls::Error> {
         Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
+#[derive(Debug)]
 pub struct NoHostnameTlsVerifier {
-    verifier: WebPkiVerifier,
+    verifier: Arc<WebPkiServerVerifier>,
 }
 
 impl ServerCertVerifier for NoHostnameTlsVerifier {
     fn verify_server_cert(
         &self,
-        end_entity: &Certificate,
-        intermediates: &[Certificate],
-        server_name: &ServerName,
-        scts: &mut dyn Iterator<Item = &[u8]>,
-        ocsp_response: &[u8],
-        now: SystemTime,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         match self.verifier.verify_server_cert(
-            end_entity,
-            intermediates,
-            server_name,
-            scts,
-            ocsp_response,
-            now,
+            _end_entity,
+            _intermediates,
+            _server_name,
+            _ocsp,
+            _now,
         ) {
             Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName)) => {
                 Ok(ServerCertVerified::assertion())
             }
             res => res,
         }
+    }
+
+    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
