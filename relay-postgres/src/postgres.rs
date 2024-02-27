@@ -931,7 +931,7 @@ fn is_retryable(e: tokio_postgres::Error) -> bool {
 struct AcceptAllTlsVerifier;
 
 impl ServerCertVerifier for AcceptAllTlsVerifier {
-    fn verify_server_cert(&self, end_entity: &CertificateDer<'_>, intermediates: &[CertificateDer<'_>], server_name: &ServerName<'_>, ocsp_response: &[u8], now: UnixTime) -> std::result::Result<ServerCertVerified, rustls::Error> {
+    fn verify_server_cert(&self, _end_entity: &CertificateDer<'_>, _intermediates: &[CertificateDer<'_>], _server_name: &ServerName<'_>, _ocsp_response: &[u8], _now: UnixTime) -> std::result::Result<ServerCertVerified, rustls::Error> {
         Ok(ServerCertVerified::assertion())
     }
 
@@ -968,18 +968,18 @@ pub struct NoHostnameTlsVerifier {
 impl ServerCertVerifier for NoHostnameTlsVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp: &[u8],
-        _now: UnixTime,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp: &[u8],
+        now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         match self.verifier.verify_server_cert(
-            _end_entity,
-            _intermediates,
-            _server_name,
-            _ocsp,
-            _now,
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp,
+            now,
         ) {
             Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName)) => {
                 Ok(ServerCertVerified::assertion())
