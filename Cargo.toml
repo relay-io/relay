@@ -18,20 +18,20 @@ license-file = "LICENSE"
 
 [workspace.dependencies]
 tokio = { version = "1.33.0", default-features = false }
-anyhow = "1.0.75"
-thiserror = "1.0.50"
-serde = "1.0.192"
-serde_json = "1.0.108"
+anyhow = "1.0.80"
+thiserror = "1.0.57"
+serde = "1.0.197"
+serde_json = "1.0.114"
 tracing = "0.1.40"
-metrics = "0.21.1"
-metrics-util = "0.15.1"
-chrono = "0.4.31"
+metrics = "0.22.1"
+metrics-util = "0.16.2"
+chrono = "0.4.34"
 backoff-rs = "0.1.0"
-anydate = "0.3.0"
+anydate = "0.4.0"
 log = "0.4.20"
-uuid = { version = "1.5.0" }
-percent-encoding = "2.3.0"
-async-channel = "2.1.0"
+uuid = { version = "1.7.0" }
+percent-encoding = "2.3.1"
+async-channel = "2.2.0"
 relay-core = { version = "*", path = "./relay-core" }
 num_cpus = "1.16.0"
 

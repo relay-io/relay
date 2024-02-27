@@ -5,7 +5,7 @@ use deadpool_postgres::{
     ClientWrapper, GenericClient, Hook, HookError, Manager, ManagerConfig, Pool, PoolError,
     RecyclingMethod, Transaction,
 };
-use metrics::{counter, histogram, increment_counter};
+use metrics::{counter, histogram};
 use pg_interval::Interval;
 use relay_core::job::{EnqueueMode, Existing as RelayExisting, New as RelayNew};
 use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
@@ -231,7 +231,7 @@ impl PgStore {
         transaction.commit().await?;
 
         for (queue, count) in counts {
-            counter!("enqueued", count, "queue" => queue.to_string());
+            counter!("enqueued", "queue" => queue.to_string()).increment(count);
         }
         debug!("enqueued jobs");
         Ok(())
@@ -270,7 +270,7 @@ impl PgStore {
         let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
         let job = row.as_ref().map(row_to_job);
 
-        increment_counter!("get", "queue" => queue.to_owned());
+        counter!("get", "queue" => queue.to_owned()).increment(1);
         debug!("got job");
         Ok(job)
     }
@@ -297,7 +297,7 @@ impl PgStore {
 
         let exists: bool = client.query_one(&stmt, &[&queue, &job_id]).await?.get(0);
 
-        increment_counter!("exists", "queue" => queue.to_owned());
+        counter!("exists", "queue" => queue.to_owned()).increment(1);
         debug!("exists check job");
         Ok(exists)
     }
@@ -390,7 +390,7 @@ impl PgStore {
             // This is a possible indicator not enough consumers/processors on the calling side
             // and jobs are backed up for processing.
             if let Ok(d) = (now - to_processed).to_std() {
-                histogram!("latency", d, "queue" => j.queue.clone(), "type" => "to_processing");
+                histogram!("latency", "queue" => j.queue.clone(), "type" => "to_processing").record(d);
             }
 
             jobs.push(j);
@@ -400,7 +400,7 @@ impl PgStore {
             debug!("fetched no jobs");
             Ok(None)
         } else {
-            counter!("fetched", jobs.len() as u64, "queue" => queue.to_owned());
+            counter!("fetched", "queue" => queue.to_owned()).increment(jobs.len() as u64);
             debug!(fetched_jobs = jobs.len(), "fetched next job(s)");
             Ok(Some(jobs))
         }
@@ -432,10 +432,10 @@ impl PgStore {
         if let Some(row) = row {
             let run_at = Utc.from_utc_datetime(&row.get(0));
 
-            increment_counter!("deleted", "queue" => queue.to_owned());
+            counter!("deleted", "queue" => queue.to_owned()).increment(1);
 
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => queue.to_owned(), "type" => "deleted");
+                histogram!("duration", "queue" => queue.to_owned(), "type" => "deleted").record(d);
             }
             debug!("deleted job");
         }
@@ -471,10 +471,10 @@ impl PgStore {
         if let Some(row) = row {
             let run_at = Utc.from_utc_datetime(&row.get(0));
 
-            increment_counter!("completed", "queue" => queue.to_owned());
+            counter!("completed", "queue" => queue.to_owned()).increment(1);
 
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => queue.to_owned(), "type" => "completed");
+                histogram!("duration", "queue" => queue.to_owned(), "type" => "completed").record(d);
             }
             debug!("completed job");
         }
@@ -545,7 +545,7 @@ impl PgStore {
             transaction.commit().await?;
 
             for (queue, count) in counts {
-                counter!("requeue", count, "queue" => queue.to_string());
+                counter!("requeue", "queue" => queue.to_string()).increment(count);
             }
         } else {
             transaction.commit().await?;
@@ -553,7 +553,7 @@ impl PgStore {
 
         if let Some(run_at) = previous_run_at {
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => queue.to_string(), "type" => "requeue");
+                histogram!("duration", "queue" => queue.to_string(), "type" => "requeue").record(d);
             }
             debug!("requeue jobs");
         }
@@ -607,10 +607,10 @@ impl PgStore {
             .map(|row| Utc.from_utc_datetime(&row.get(0)));
 
         if let Some(run_at) = run_at {
-            increment_counter!("heartbeat", "queue" => queue.to_owned());
+            counter!("heartbeat", "queue" => queue.to_owned()).increment(1);
 
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => queue.to_owned(), "type" => "running");
+                histogram!("duration", "queue" => queue.to_owned(), "type" => "running").record(d);
             }
             debug!("heartbeat job");
             Ok(())
@@ -707,7 +707,7 @@ impl PgStore {
             let queue: String = row.get(0);
             let count: i64 = row.get(1);
             debug!(queue = %queue, count = count, "retrying jobs");
-            counter!("retries", u64::try_from(count).unwrap_or_default(), "queue" => queue);
+            counter!("retries", "queue" => queue).increment(u64::try_from(count).unwrap_or_default());
         }
 
         let stmt = client
@@ -740,7 +740,7 @@ impl PgStore {
                 queue = %queue,
                 "deleted records from queue that reached their max retries"
             );
-            counter!("errors", u64::try_from(count).unwrap_or_default(), "queue" => queue, "type" => "max_retries");
+            counter!("errors", "queue" => queue, "type" => "max_retries").increment(u64::try_from(count).unwrap_or_default());
         }
         Ok(())
     }

@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, head, patch, post, put};
 use axum::{Json, Router};
-use metrics::increment_counter;
+use metrics::counter;
 use relay_core::job::{EnqueueMode, New, OldV1};
 use relay_core::num::GtZeroI64;
 use relay_postgres::{Error as PostgresError, PgStore};
@@ -43,10 +43,10 @@ async fn enqueue_v2(
     params: Query<EnqueueQueryInfo>,
     jobs: Json<Vec<New<Box<RawValue>, Box<RawValue>>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "enqueue", "version" => "v2");
+    counter!("http_request", "endpoint" => "enqueue", "version" => "v2").increment(1);
 
     if let Err(e) = state.enqueue(params.0.enqueue_mode(), jobs.0.iter()).await {
-        increment_counter!("errors", "endpoint" => "enqueue", "type" => e.error_type());
+        counter!("errors", "endpoint" => "enqueue", "type" => e.error_type()).increment(1);
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -72,7 +72,7 @@ async fn get_job_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v2").increment(1);
 
     match state.get(&queue, &id).await {
         Ok(job) => {
@@ -83,7 +83,7 @@ async fn get_job_v2(
             }
         }
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+            counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
@@ -103,7 +103,7 @@ async fn exists_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v2").increment(1);
 
     match state.exists(&queue, &id).await {
         Ok(exists) => {
@@ -114,7 +114,7 @@ async fn exists_v2(
             }
         }
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+            counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
@@ -135,7 +135,7 @@ async fn heartbeat_v2(
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
     job_state: Option<Json<Box<RawValue>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v2").increment(1);
 
     let job_state = match job_state {
         None => None,
@@ -145,7 +145,7 @@ async fn heartbeat_v2(
         .heartbeat(&queue, &id, &run_id, job_state.as_deref())
         .await
     {
-        increment_counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+        counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
         match e {
             PostgresError::JobNotFound { .. } => {
                 (StatusCode::NOT_FOUND, e.to_string()).into_response()
@@ -173,13 +173,13 @@ async fn requeue(
     params: Query<EnqueueQueryInfo>,
     jobs: Json<Vec<New<Box<RawValue>, Box<RawValue>>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "requeue", "version" => "v2");
+    counter!("http_request", "endpoint" => "requeue", "version" => "v2").increment(1);
 
     if let Err(e) = state
         .requeue(params.0.enqueue_mode(), &queue, &id, &run_id, jobs.0.iter())
         .await
     {
-        increment_counter!("errors", "endpoint" => "requeue", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+        counter!("errors", "endpoint" => "requeue", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
         match e {
             PostgresError::JobExists { .. } => {
                 (StatusCode::CONFLICT, e.to_string()).into_response()
@@ -205,10 +205,10 @@ async fn delete_job_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2").increment(1);
 
     if let Err(e) = state.delete(&queue, &id).await {
-        increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+        counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -231,10 +231,10 @@ async fn complete_job(
     State(state): State<Arc<PgStore>>,
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2").increment(1);
 
     if let Err(e) = state.complete(&queue, &id, &run_id).await {
-        increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+        counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -268,11 +268,11 @@ async fn next_v2(
     Path(queue): Path<String>,
     params: Query<NextQueryInfo>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v2").increment(1);
 
     match state.next(&queue, params.0.num_jobs).await {
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+            counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
             if let PostgresError::Backend { .. } = e {
                 if e.is_retryable() {
                     (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
@@ -298,7 +298,7 @@ async fn enqueue_v1(
     State(state): State<Arc<PgStore>>,
     jobs: Json<Vec<OldV1<Box<RawValue>, Box<RawValue>>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "enqueue", "version" => "v1");
+    counter!("http_request", "endpoint" => "enqueue", "version" => "v1").increment(1);
 
     let mode = if jobs.len() == 1 {
         EnqueueMode::Unique
@@ -308,7 +308,7 @@ async fn enqueue_v1(
     let jobs = jobs.0.into_iter().map(New::from).collect::<Vec<_>>();
 
     if let Err(e) = state.enqueue(mode, jobs.iter()).await {
-        increment_counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2");
+        counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2").increment(1);
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -334,7 +334,7 @@ async fn reschedule_v1(
     State(state): State<Arc<PgStore>>,
     job: Json<OldV1<Box<RawValue>, Box<RawValue>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone(), "version" => "v1").increment(1);
 
     // need to get run_id for new requeue logic.
     let run_id = match state.get(&job.0.queue, &job.0.id).await {
@@ -354,7 +354,7 @@ async fn reschedule_v1(
         )
         .await
     {
-        increment_counter!("errors", "endpoint" => "enqueued", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+        counter!("errors", "endpoint" => "enqueued", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
         match e {
             PostgresError::JobExists { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -380,10 +380,10 @@ async fn delete_job_v1(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v1").increment(1);
 
     if let Err(e) = state.delete(&queue, &id).await {
-        increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+        counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
         match e {
             PostgresError::JobNotFound { .. } => {
                 (StatusCode::NOT_FOUND, e.to_string()).into_response()
@@ -410,7 +410,7 @@ async fn heartbeat_v1(
     Path((queue, id)): Path<(String, String)>,
     job_state: Option<Json<Box<RawValue>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v1").increment(1);
 
     // need to get run_id for new requeue logic.
     let run_id = match state.get(&queue, &id).await {
@@ -432,7 +432,7 @@ async fn heartbeat_v1(
         .heartbeat(&queue, &id, &run_id, job_state.as_deref())
         .await
     {
-        increment_counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+        counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
         match e {
             PostgresError::JobNotFound { .. } => {
                 (StatusCode::NOT_FOUND, e.to_string()).into_response()
@@ -458,7 +458,7 @@ async fn exists_v1(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v1").increment(1);
 
     match state.exists(&queue, &id).await {
         Ok(exists) => {
@@ -469,7 +469,7 @@ async fn exists_v1(
             }
         }
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+            counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
@@ -489,7 +489,7 @@ async fn get_job_v1(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v1").increment(1);
 
     match state.get(&queue, &id).await {
         Ok(job) => {
@@ -500,7 +500,7 @@ async fn get_job_v1(
             }
         }
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+            counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
@@ -521,11 +521,11 @@ async fn next_v1(
     Path(queue): Path<String>,
     params: Query<NextQueryInfo>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v1").increment(1);
 
     match state.next(&queue, params.0.num_jobs).await {
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+            counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
             if let PostgresError::Backend { .. } = e {
                 if e.is_retryable() {
                     (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
