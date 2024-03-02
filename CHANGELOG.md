@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2023-03-02
+### Changed
+- Updated Runner trait to use rust 1.75 impl trait instead of async_trait.
+- Upgraded dependencies including to Axum 0.7.x, latest rustls and tokio.
+
+### Fixed
+- Documentation around raw JSON payload giving the impression of it needing to be a string.
+
 ## [0.1.3] - 2023-12-14
 ### Fixed
 - `to_processing` metric when job requeued.
@@ -22,7 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial rework of relay-rs(v1) https://github.com/rust-playground/relay-rs with real world improvements after using in production for over a year.
 
-[Unreleased]: https://github.com/relay-io/relay/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/relay-io/relay/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/relay-io/relay/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/relay-io/relay/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/relay-io/relay/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/relay-io/relay/compare/v0.1.0...v0.1.1
