@@ -186,9 +186,9 @@ impl PgStore {
                     &[
                         &job.id,
                         &job.queue,
-                        &Interval::from_duration(chrono::Duration::seconds(i64::from(
+                        &Interval::from_duration(chrono::TimeDelta::try_seconds(i64::from(
                             job.timeout.get(),
-                        ))),
+                        )).unwrap_or_else(|| chrono::TimeDelta::try_seconds(0).unwrap())),
                         &job.max_retries.as_ref().map(|r| Some(r.get())),
                         &Json(&job.payload),
                         &job.state.as_ref().map(|state| Some(Json(state))),
