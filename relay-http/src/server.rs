@@ -337,8 +337,8 @@ async fn reschedule_v1(
     counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone(), "version" => "v1").increment(1);
 
     // need to get run_id for new requeue logic.
-    let run_id = match state.get(&job.0.queue, &job.0.id).await {
-        Ok(Some(job)) if job.run_id.is_some() => job.run_id.unwrap(),
+    let run_id = match state.get_run_id(&job.0.queue, &job.0.id).await {
+        Ok(Some(run_id)) => run_id,
         _ => return StatusCode::ACCEPTED.into_response(),
     };
 
@@ -413,8 +413,8 @@ async fn heartbeat_v1(
     counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v1").increment(1);
 
     // need to get run_id for new requeue logic.
-    let run_id = match state.get(&queue, &id).await {
-        Ok(Some(job)) if job.run_id.is_some() => job.run_id.unwrap(),
+    let run_id = match state.get_run_id(&queue, &id).await {
+        Ok(Some(run_id))  => run_id,
         _ => {
             return (
                 StatusCode::NOT_FOUND,

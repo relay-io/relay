@@ -276,6 +276,28 @@ impl PgStore {
         Ok(job)
     }
 
+    pub async fn get_run_id(&self, queue: &str, job_id: &str) -> Result<Option<Uuid>> {
+        let client = self.pool.get().await?;
+        let stmt = client
+            .prepare_cached(
+                "
+               SELECT run_id
+               FROM jobs
+               WHERE
+                    queue=$1 AND
+                    id=$2
+            ",
+            )
+            .await?;
+
+        let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
+        let run_id = row.as_ref().map(|row| row.get(0));
+
+        counter!("get_run_id", "queue" => queue.to_owned()).increment(1);
+        debug!("got run id");
+        Ok(run_id)
+    }
+
     /// Checks and returns if a Job exists in the database with the provided queue and id.
     ///
     /// # Errors
