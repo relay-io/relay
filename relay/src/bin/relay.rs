@@ -17,6 +17,7 @@
 use anyhow::Context;
 use clap::Parser;
 use std::env;
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -75,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(std::io::stdout());
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
+        .with_ansi(std::io::stdout().is_terminal())
         .with_writer(non_blocking)
         .init();
 

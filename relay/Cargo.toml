@@ -12,7 +12,7 @@ license.workspace = true
 relay-core.workspace = true
 relay-http = { version = "*", path = "../relay-http", optional = true}
 relay-postgres = { version = "*", path = "../relay-postgres", optional = true}
-tracing-subscriber = { version = "0.3.18", default-features = false, features = ["smallvec", "fmt", "env-filter", "tracing-log", "std"] }
+tracing-subscriber = { version = "0.3.18", default-features = false, features = ["smallvec", "fmt", "env-filter", "tracing-log", "std", "ansi"] }
 metrics-exporter-prometheus = { version = "0.13.1", optional = true }
 anyhow.workspace = true
 clap = { version = "4", features = ["derive", "env"] }
