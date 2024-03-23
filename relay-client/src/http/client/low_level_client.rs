@@ -1,18 +1,23 @@
-use super::errors::Result;
-use crate::http::client::poller::{Builder as PollBuilder, Runner};
-use crate::http::client::Error;
-use backoff_rs::{Exponential, ExponentialBackoffBuilder};
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use relay_core::job::{EnqueueMode, Existing, New};
-use reqwest::StatusCode;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::borrow::Cow;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+
+use backoff_rs::{Exponential, ExponentialBackoffBuilder};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+use reqwest::StatusCode;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use tokio::time::sleep;
 use uuid::Uuid;
+
+use relay_core::job::{EnqueueMode, Existing, New};
+
+use crate::http::client::Error;
+use crate::http::client::Error::{JobExists, JobNotFound};
+use crate::http::client::poller::{Builder as PollBuilder, Runner};
+
+use super::errors::Result;
 
 /// A Builder can be used to create a custom `Client`.
 pub struct Builder {
@@ -473,25 +478,27 @@ impl Client {
         Fut: Future<Output = Result<R>>,
     {
         let mut attempt = 0;
+        let mut remaining = self.max_retries;
         loop {
             let result = f().await;
             return match result {
-                Err(e) => {
-                    if e.is_retryable() {
-                        if let Some(max_retries) = self.max_retries {
-                            if attempt >= max_retries {
-                                return Err(e);
-                            }
+                Err(e) if e != JobExists && e != JobNotFound => {
+                    if let Some(ref mut remaining) = remaining {
+                        if *remaining == 0 {
+                            return Err(e);
+                        } else if !e.is_retryable() {
+                            *remaining -= 1;
                         }
-                        if e.is_poll_retryable() {
-                            sleep(self.poll_backoff.duration(attempt)).await;
-                        } else {
-                            sleep(self.retry_backoff.duration(attempt)).await;
-                        }
-                        attempt += 1;
-                        continue;
                     }
-                    Err(e)
+                    if e.is_poll_retryable() {
+                        sleep(self.poll_backoff.duration(attempt)).await;
+                    } else {
+                        sleep(self.retry_backoff.duration(attempt)).await;
+                    }
+                    if let Some(a) = attempt.checked_add(1) {
+                        attempt = a;
+                    };
+                    continue;
                 }
                 _ => result,
             };
