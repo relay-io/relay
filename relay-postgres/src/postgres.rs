@@ -1,5 +1,10 @@
-use crate::errors::{Error, Result};
-use crate::migrations::{run_migrations, Migration};
+use std::{str::FromStr, time::Duration};
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::io;
+use std::io::ErrorKind;
+use std::sync::Arc;
+
 use chrono::{TimeZone, Utc};
 use deadpool_postgres::{
     ClientWrapper, GenericClient, Hook, HookError, Manager, ManagerConfig, Pool, PoolError,
@@ -7,26 +12,29 @@ use deadpool_postgres::{
 };
 use metrics::{counter, histogram};
 use pg_interval::Interval;
-use relay_core::job::{EnqueueMode, Existing as RelayExisting, New as RelayNew};
-use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
 use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
-use serde_json::value::RawValue;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::io;
-use std::io::ErrorKind;
-use std::sync::Arc;
-use std::{str::FromStr, time::Duration};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, TrustAnchor, UnixTime};
+use serde_json::value::RawValue;
+use tokio_postgres::{Config as PostgresConfig, Row, Statement};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::{Json, ToSql};
-use tokio_postgres::{Config as PostgresConfig, Row, Statement};
 use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, warn};
 use uuid::Uuid;
+
+use relay_core::job::{EnqueueMode, Existing as RelayExisting, New as RelayNew};
+use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
+
+use crate::errors::{Error, Result};
+use crate::migrations::{Migration, run_migrations};
+
+use rustls::client::WebPkiServerVerifier;
+use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
+use rustls::pki_types::{CertificateDer, ServerName, TrustAnchor, UnixTime};
+use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
 
 type Existing = RelayExisting<Box<RawValue>, Box<RawValue>>;
 type New = RelayNew<Box<RawValue>, Box<RawValue>>;
@@ -186,9 +194,10 @@ impl PgStore {
                     &[
                         &job.id,
                         &job.queue,
-                        &Interval::from_duration(chrono::TimeDelta::try_seconds(i64::from(
-                            job.timeout.get(),
-                        )).unwrap_or_else(|| chrono::TimeDelta::try_seconds(0).unwrap())),
+                        &Interval::from_duration(
+                            chrono::TimeDelta::try_seconds(i64::from(job.timeout.get()))
+                                .unwrap_or_else(|| chrono::TimeDelta::try_seconds(0).unwrap()),
+                        ),
                         &job.max_retries.as_ref().map(|r| Some(r.get())),
                         &Json(&job.payload),
                         &job.state.as_ref().map(|state| Some(Json(state))),
@@ -276,6 +285,11 @@ impl PgStore {
         Ok(job)
     }
 
+    /// Fetches the `run_id` of Job for purposes of v1->v2 backward compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
     pub async fn get_run_id(&self, queue: &str, job_id: &str) -> Result<Option<Uuid>> {
         let client = self.pool.get().await?;
         let stmt = client
@@ -413,7 +427,8 @@ impl PgStore {
             // This is a possible indicator not enough consumers/processors on the calling side
             // and jobs are backed up for processing.
             if let Ok(d) = (now - to_processed).to_std() {
-                histogram!("latency", "queue" => j.queue.clone(), "type" => "to_processing").record(d);
+                histogram!("latency", "queue" => j.queue.clone(), "type" => "to_processing")
+                    .record(d);
             }
 
             jobs.push(j);
@@ -497,7 +512,8 @@ impl PgStore {
             counter!("completed", "queue" => queue.to_owned()).increment(1);
 
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", "queue" => queue.to_owned(), "type" => "completed").record(d);
+                histogram!("duration", "queue" => queue.to_owned(), "type" => "completed")
+                    .record(d);
             }
             debug!("completed job");
         }
@@ -730,7 +746,8 @@ impl PgStore {
             let queue: String = row.get(0);
             let count: i64 = row.get(1);
             debug!(queue = %queue, count = count, "retrying jobs");
-            counter!("retries", "queue" => queue).increment(u64::try_from(count).unwrap_or_default());
+            counter!("retries", "queue" => queue)
+                .increment(u64::try_from(count).unwrap_or_default());
         }
 
         let stmt = client
@@ -763,7 +780,8 @@ impl PgStore {
                 queue = %queue,
                 "deleted records from queue that reached their max retries"
             );
-            counter!("errors", "queue" => queue, "type" => "max_retries").increment(u64::try_from(count).unwrap_or_default());
+            counter!("errors", "queue" => queue, "type" => "max_retries")
+                .increment(u64::try_from(count).unwrap_or_default());
         }
         Ok(())
     }
@@ -953,11 +971,23 @@ fn is_retryable(e: tokio_postgres::Error) -> bool {
 struct AcceptAllTlsVerifier;
 
 impl ServerCertVerifier for AcceptAllTlsVerifier {
-    fn verify_server_cert(&self, _end_entity: &CertificateDer<'_>, _intermediates: &[CertificateDer<'_>], _server_name: &ServerName<'_>, _ocsp_response: &[u8], _now: UnixTime) -> std::result::Result<ServerCertVerified, rustls::Error> {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         Ok(ServerCertVerified::assertion())
     }
 
-    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
         verify_tls12_signature(
             message,
             cert,
@@ -966,7 +996,12 @@ impl ServerCertVerifier for AcceptAllTlsVerifier {
         )
     }
 
-    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
         verify_tls13_signature(
             message,
             cert,
@@ -996,13 +1031,10 @@ impl ServerCertVerifier for NoHostnameTlsVerifier {
         ocsp: &[u8],
         now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
-        match self.verifier.verify_server_cert(
-            end_entity,
-            intermediates,
-            server_name,
-            ocsp,
-            now,
-        ) {
+        match self
+            .verifier
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp, now)
+        {
             Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName)) => {
                 Ok(ServerCertVerified::assertion())
             }
@@ -1010,7 +1042,12 @@ impl ServerCertVerifier for NoHostnameTlsVerifier {
         }
     }
 
-    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
         verify_tls12_signature(
             message,
             cert,
@@ -1019,7 +1056,12 @@ impl ServerCertVerifier for NoHostnameTlsVerifier {
         )
     }
 
-    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
         verify_tls13_signature(
             message,
             cert,
@@ -1037,8 +1079,9 @@ impl ServerCertVerifier for NoHostnameTlsVerifier {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use chrono::DurationRound;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_reschedule_replace_pk_change() -> anyhow::Result<()> {
