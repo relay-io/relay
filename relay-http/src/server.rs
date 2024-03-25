@@ -1,23 +1,25 @@
 //! The HTTP server for the relay.
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::{Json, Router};
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, head, patch, post, put};
-use axum::{Json, Router};
 use metrics::counter;
+use serde::Deserialize;
+use serde_json::value::RawValue;
+use tokio::net::TcpListener;
+use tower_http::trace::TraceLayer;
+use tracing::{info, Level, span, Span};
+use uuid::Uuid;
+
 use relay_core::job::{EnqueueMode, New, OldV1};
 use relay_core::num::GtZeroI64;
 use relay_postgres::{Error as PostgresError, PgStore};
-use serde::Deserialize;
-use serde_json::value::RawValue;
-use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::net::TcpListener;
-use tower_http::trace::TraceLayer;
-use tracing::{info, span, Level, Span};
-use uuid::Uuid;
 
 /// The internal HTTP server representation for Jobs.
 pub struct Server;
@@ -72,7 +74,8 @@ async fn get_job_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v2").increment(1);
+    counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     match state.get(&queue, &id).await {
         Ok(job) => {
@@ -103,7 +106,8 @@ async fn exists_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v2").increment(1);
+    counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     match state.exists(&queue, &id).await {
         Ok(exists) => {
@@ -205,7 +209,8 @@ async fn delete_job_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2").increment(1);
+    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     if let Err(e) = state.delete(&queue, &id).await {
         counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
@@ -231,7 +236,8 @@ async fn complete_job(
     State(state): State<Arc<PgStore>>,
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
 ) -> Response {
-    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2").increment(1);
+    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     if let Err(e) = state.complete(&queue, &id, &run_id).await {
         counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
@@ -268,7 +274,8 @@ async fn next_v2(
     Path(queue): Path<String>,
     params: Query<NextQueryInfo>,
 ) -> Response {
-    counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v2").increment(1);
+    counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     match state.next(&queue, params.0.num_jobs).await {
         Err(e) => {
@@ -308,7 +315,8 @@ async fn enqueue_v1(
     let jobs = jobs.0.into_iter().map(New::from).collect::<Vec<_>>();
 
     if let Err(e) = state.enqueue(mode, jobs.iter()).await {
-        counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2").increment(1);
+        counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2")
+            .increment(1);
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -337,9 +345,8 @@ async fn reschedule_v1(
     counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone(), "version" => "v1").increment(1);
 
     // need to get run_id for new requeue logic.
-    let run_id = match state.get_run_id(&job.0.queue, &job.0.id).await {
-        Ok(Some(run_id)) => run_id,
-        _ => return StatusCode::ACCEPTED.into_response(),
+    let Ok(Some(run_id)) = state.get_run_id(&job.0.queue, &job.0.id).await else {
+        return StatusCode::ACCEPTED.into_response();
     };
 
     let job = New::from(job.0);
@@ -380,7 +387,8 @@ async fn delete_job_v1(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v1").increment(1);
+    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v1")
+        .increment(1);
 
     if let Err(e) = state.delete(&queue, &id).await {
         counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
@@ -413,15 +421,12 @@ async fn heartbeat_v1(
     counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v1").increment(1);
 
     // need to get run_id for new requeue logic.
-    let run_id = match state.get_run_id(&queue, &id).await {
-        Ok(Some(run_id))  => run_id,
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                format!("job with id `{id}` not found in queue `{queue}`."),
-            )
-                .into_response()
-        }
+    let Ok(Some(run_id)) = state.get_run_id(&queue, &id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("job with id `{id}` not found in queue `{queue}`."),
+        )
+            .into_response();
     };
 
     let job_state = match job_state {
@@ -458,7 +463,8 @@ async fn exists_v1(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v1").increment(1);
+    counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v1")
+        .increment(1);
 
     match state.exists(&queue, &id).await {
         Ok(exists) => {
@@ -489,7 +495,8 @@ async fn get_job_v1(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v1").increment(1);
+    counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v1")
+        .increment(1);
 
     match state.get(&queue, &id).await {
         Ok(job) => {
@@ -521,7 +528,8 @@ async fn next_v1(
     Path(queue): Path<String>,
     params: Query<NextQueryInfo>,
 ) -> Response {
-    counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v1").increment(1);
+    counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v1")
+        .increment(1);
 
     match state.next(&queue, params.0.num_jobs).await {
         Err(e) => {
@@ -627,22 +635,25 @@ impl Server {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::ops::Add;
+
     use anyhow::{anyhow, Context};
-    use chrono::DurationRound;
+    use chrono::{DurationRound, TimeDelta};
     use chrono::Utc;
     use portpicker::pick_unused_port;
+    use tokio::sync::Mutex;
+    use tokio::task::JoinHandle;
+    use uuid::Uuid;
+
     use relay_client::http::client::{
         Builder as ClientBuilder, Client, Error as ClientError, JobHelper, Runner,
     };
     use relay_core::job::Existing;
     use relay_core::num::PositiveI32;
     use relay_postgres::PgStore;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::ops::Add;
-    use tokio::sync::Mutex;
-    use tokio::task::JoinHandle;
-    use uuid::Uuid;
+
+    use super::*;
 
     /// Generates a `SocketAddr` on the IP 0.0.0.0, using a random port.
     pub fn new_random_socket_addr() -> anyhow::Result<SocketAddr> {
@@ -683,7 +694,7 @@ mod tests {
     async fn test_oneshot_job_v2() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: New<(), i32> = New {
             id: Uuid::new_v4().to_string(),
@@ -740,7 +751,7 @@ mod tests {
     async fn test_requeue_v2() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: New<(), i32> = New {
             id: Uuid::new_v4().to_string(),
@@ -777,7 +788,7 @@ mod tests {
 
         jobs.first_mut().unwrap().run_at = Some(
             Utc::now()
-                .duration_trunc(chrono::Duration::milliseconds(1))
+                .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
                 .unwrap(),
         );
         client
@@ -964,7 +975,7 @@ mod tests {
             .expect("valid default HTTP Client configuration");
 
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: OldV1<(), i32> = OldV1 {
             id: Uuid::new_v4().to_string(),
@@ -1042,7 +1053,7 @@ mod tests {
             .expect("valid default HTTP Client configuration");
 
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: OldV1<(), i32> = OldV1 {
             id: Uuid::new_v4().to_string(),
@@ -1088,8 +1099,8 @@ mod tests {
         assert_eq!(j2, j);
 
         let now = Utc::now()
-            .add(chrono::Duration::days(1))
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .add(TimeDelta::try_days(1).unwrap())
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         jobs.first_mut().unwrap().state = Some(4);
         jobs.first_mut().unwrap().run_at = Some(now);
@@ -1127,7 +1138,7 @@ mod tests {
             .expect("valid default HTTP Client configuration");
 
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: OldV1<(), i32> = OldV1 {
             id: Uuid::new_v4().to_string(),
@@ -1161,7 +1172,7 @@ mod tests {
     async fn test_poller() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let queue = Uuid::new_v4().to_string();
         let j: New<i32, i32> = New {

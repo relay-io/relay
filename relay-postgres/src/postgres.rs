@@ -31,11 +31,6 @@ use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
 use crate::errors::{Error, Result};
 use crate::migrations::{Migration, run_migrations};
 
-use rustls::client::WebPkiServerVerifier;
-use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
-use rustls::pki_types::{CertificateDer, ServerName, TrustAnchor, UnixTime};
-use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
-
 type Existing = RelayExisting<Box<RawValue>, Box<RawValue>>;
 type New = RelayNew<Box<RawValue>, Box<RawValue>>;
 
@@ -1079,7 +1074,7 @@ impl ServerCertVerifier for NoHostnameTlsVerifier {
 
 #[cfg(test)]
 mod tests {
-    use chrono::DurationRound;
+    use chrono::{DurationRound, TimeDelta};
 
     use super::*;
 
@@ -1354,7 +1349,7 @@ mod tests {
         assert_eq!(1, next.as_ref().unwrap().len());
         let next = &next.unwrap()[0];
 
-        let now = Utc::now().duration_trunc(chrono::Duration::milliseconds(100))?;
+        let now = Utc::now().duration_trunc(TimeDelta::try_milliseconds(100).unwrap())?;
         let mut reschedule = New {
             id: job_id.clone(),
             queue: queue.clone(),
