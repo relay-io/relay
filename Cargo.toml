@@ -17,23 +17,24 @@ license = "AGPL-3.0-or-later"
 license-file = "LICENSE"
 
 [workspace.dependencies]
-tokio = { version = "1.33.0", default-features = false }
-anyhow = "1.0.80"
-thiserror = "1.0.57"
+tokio = { version = "1.36.0", default-features = false }
+anyhow = "1.0.81"
+thiserror = "1.0.58"
 serde = "1.0.197"
-serde_json = "1.0.114"
+serde_json = "1.0.115"
 tracing = "0.1.40"
-metrics = "0.22.1"
-metrics-util = "0.16.2"
-chrono = "0.4.34"
+metrics = "0.22.3"
+metrics-util = "0.16.3"
+chrono = "0.4.37"
 backoff-rs = "0.1.0"
 anydate = "0.4.0"
-log = "0.4.20"
-uuid = { version = "1.7.0" }
+log = "0.4.21"
+uuid = { version = "1.8.0" }
 percent-encoding = "2.3.1"
 async-channel = "2.2.0"
 relay-core = { version = "*", path = "./relay-core" }
 num_cpus = "1.16.0"
+reqwest = { version = "0.12.2" }
 
 [profile.release]
 lto = true

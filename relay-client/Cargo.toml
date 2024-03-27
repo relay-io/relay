@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 relay-core.workspace = true
-reqwest = { version = "0.12.1", features = ["rustls-tls", "json"] }
+reqwest = { workspace = true, features = ["rustls-tls", "json"] }
 backoff-rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -16,6 +16,6 @@ percent-encoding.workspace = true
 async-channel.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-tokio = { workspace = true, features = ["time", "macros","signal"] }
+tokio = { workspace = true, features = ["time", "macros", "signal"] }
 anyhow.workspace = true
 num_cpus.workspace = true
