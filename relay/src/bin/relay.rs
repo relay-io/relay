@@ -17,10 +17,11 @@
 use anyhow::Context;
 use clap::Parser;
 use std::env;
+use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use relay_postgres::PgStore;
@@ -75,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
     let (non_blocking, _guard) = tracing_appender::non_blocking(std::io::stdout());
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
+        .with_ansi(std::io::stdout().is_terminal())
         .with_writer(non_blocking)
         .init();
 
@@ -148,10 +150,10 @@ async fn shutdown_signal() {
     let mut quit = signal(SignalKind::quit()).expect("Expect shutdown signal");
 
     tokio::select! {
-        _ = interrupt.recv() => debug!("Received SIGINT"),
-        _ = terminate.recv() => debug!("Received SIGTERM"),
-        _ = hangup.recv() => debug!("Received SIGHUP"),
-        _ = quit.recv() => debug!("Received SIGQUIT"),
+        _ = interrupt.recv() => info!("Received SIGINT"),
+        _ = terminate.recv() => info!("Received SIGTERM"),
+        _ = hangup.recv() => info!("Received SIGHUP"),
+        _ = quit.recv() => info!("Received SIGQUIT"),
     }
     info!("received shutdown signal");
 }

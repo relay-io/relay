@@ -14,6 +14,9 @@ It on purpose does not:
 Relay embraces the unix philosophy of doing one thing and doing it well leaving the above as optional features to be handled
 by the callers and or clients.
 
+### Rust MSRv
+Rust 1.75+
+
 #### Crates
 See details for each crate.
 

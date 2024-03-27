@@ -31,7 +31,7 @@ In this case the only arguments are part of the Body payload.
         "queue": "my-queue",
         "timeout": 30,
         "max_retries": 0,
-        "payload": "RAW JSON"
+        "payload": <RAW JSON>
     }
 ]
 ```
@@ -72,7 +72,7 @@ Some fields may not be present such as `state` when none exists.
     "queue": "my-queue",
     "timeout": 30,
     "max_retries": 0,
-    "payload": "RAW JSON",
+    "payload": <RAW JSON>,
     "state": "RAW JSON",
     "run_at": "2022-09-05T04:37:23Z",
     "updated_at": "2022-09-05T04:37:23Z",
@@ -148,7 +148,7 @@ In this case the only arguments are part of the Body payload.
   "queue": "my-queue",
   "timeout": 30,
   "max_retries": 0,
-  "payload": "RAW JSON"
+  "payload": <RAW JSON>
 }
 ```
 
@@ -239,7 +239,7 @@ In this case the only arguments are path params.
 "queue": "my-queue",
 "timeout": 30,
 "max_retries": 0,
-"payload": "RAW JSON",
+"payload": <RAW JSON>,
 ...
 }
 ```

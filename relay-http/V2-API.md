@@ -53,8 +53,8 @@ Enqueues Job(s) to be processed using the provided mode.
         "id": "1",
         "timeout": 30,
         "max_retries": 0,
-        "payload": "RAW JSON",
-        "state": "RAW JSON",
+        "payload": <RAW JSON>,
+        "state": <RAW JSON>,
         "run_at": "2022-09-05T04:37:23Z"
     }
 ]
@@ -96,8 +96,8 @@ Some fields may not be present such as `state` when none exists.
     "timeout": 30,
     "max_retries": null,
     "retries_remaining": null,
-    "payload": "RAW JSON",
-    "state": "RAW JSON",
+    "payload": <RAW JSON>,
+    "state": <RAW JSON>,
     "run_id": "UUID",
     "run_at": "2022-09-05T04:37:23Z",
     "updated_at": "2022-09-05T04:40:01Z",
@@ -165,8 +165,8 @@ This allows for:
     "id": "1",
     "timeout": 30,
     "max_retries": 0,
-    "payload": "RAW JSON",
-    "state": "RAW JSON",
+    "payload": <RAW JSON>,
+    "state": <RAW JSON>,
     "run_at": "2022-09-05T04:37:23Z"
   }
 ]
@@ -246,8 +246,8 @@ Fetches the Job from the database if it exists.
   "timeout": 30,
   "max_retries": null,
   "retries_remaining": null,
-  "payload": "RAW JSON",
-  "state": "RAW JSON",
+  "payload": <RAW JSON>,
+  "state": <RAW JSON>,
   "run_id": "UUID",
   "run_at": "2022-09-05T04:37:23Z",
   "updated_at": "2022-09-05T04:40:01Z",

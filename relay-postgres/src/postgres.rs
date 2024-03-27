@@ -1,30 +1,35 @@
-use crate::errors::{Error, Result};
-use crate::migrations::{run_migrations, Migration};
-use chrono::{TimeZone, Utc};
-use deadpool_postgres::{
-    ClientWrapper, GenericClient, Hook, HookError, Manager, ManagerConfig, Pool, PoolError,
-    RecyclingMethod, Transaction,
-};
-use metrics::{counter, histogram, increment_counter};
-use pg_interval::Interval;
-use relay_core::job::{EnqueueMode, Existing as RelayExisting, New as RelayNew};
-use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
-use rustls::client::{ServerCertVerified, ServerCertVerifier, WebPkiVerifier};
-use rustls::{Certificate, OwnedTrustAnchor, RootCertStore, ServerName};
-use serde_json::value::RawValue;
+use std::{str::FromStr, time::Duration};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
 use std::io::ErrorKind;
 use std::sync::Arc;
-use std::time::SystemTime;
-use std::{str::FromStr, time::Duration};
+
+use chrono::{TimeZone, Utc};
+use deadpool_postgres::{
+    ClientWrapper, GenericClient, Hook, HookError, Manager, ManagerConfig, Pool, PoolError,
+    RecyclingMethod, Transaction,
+};
+use metrics::{counter, histogram};
+use pg_interval::Interval;
+use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::client::WebPkiServerVerifier;
+use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
+use rustls::pki_types::{CertificateDer, ServerName, TrustAnchor, UnixTime};
+use serde_json::value::RawValue;
+use tokio_postgres::{Config as PostgresConfig, Row, Statement};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::{Json, ToSql};
-use tokio_postgres::{Config as PostgresConfig, Row, Statement};
 use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, warn};
 use uuid::Uuid;
+
+use relay_core::job::{EnqueueMode, Existing as RelayExisting, New as RelayNew};
+use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
+
+use crate::errors::{Error, Result};
+use crate::migrations::{Migration, run_migrations};
 
 type Existing = RelayExisting<Box<RawValue>, Box<RawValue>>;
 type New = RelayNew<Box<RawValue>, Box<RawValue>>;
@@ -91,7 +96,7 @@ impl PgStore {
             pg_config.application_name("relay");
         }
 
-        let tls_config_defaults = rustls::ClientConfig::builder().with_safe_defaults();
+        let tls_config_defaults = rustls::ClientConfig::builder().dangerous();
 
         let tls_config = if accept_invalid_certs {
             tls_config_defaults
@@ -99,21 +104,20 @@ impl PgStore {
                 .with_no_client_auth()
         } else {
             let mut cert_store = RootCertStore::empty();
-            cert_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
+            cert_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| TrustAnchor {
+                subject: ta.subject.clone(),
+                subject_public_key_info: ta.subject_public_key_info.clone(),
+                name_constraints: ta.name_constraints.clone(),
             }));
 
             if accept_invalid_hostnames {
-                let verifier = WebPkiVerifier::new(cert_store, None);
+                let verifier = WebPkiServerVerifier::builder(Arc::new(cert_store)).build()?;
                 tls_config_defaults
                     .with_custom_certificate_verifier(Arc::new(NoHostnameTlsVerifier { verifier }))
                     .with_no_client_auth()
             } else {
                 tls_config_defaults
+                    .cfg
                     .with_root_certificates(cert_store)
                     .with_no_client_auth()
             }
@@ -185,9 +189,10 @@ impl PgStore {
                     &[
                         &job.id,
                         &job.queue,
-                        &Interval::from_duration(chrono::Duration::seconds(i64::from(
-                            job.timeout.get(),
-                        ))),
+                        &Interval::from_duration(
+                            chrono::TimeDelta::try_seconds(i64::from(job.timeout.get()))
+                                .unwrap_or_else(|| chrono::TimeDelta::try_seconds(0).unwrap()),
+                        ),
                         &job.max_retries.as_ref().map(|r| Some(r.get())),
                         &Json(&job.payload),
                         &job.state.as_ref().map(|state| Some(Json(state))),
@@ -231,7 +236,7 @@ impl PgStore {
         transaction.commit().await?;
 
         for (queue, count) in counts {
-            counter!("enqueued", count, "queue" => queue.to_string());
+            counter!("enqueued", "queue" => queue.to_string()).increment(count);
         }
         debug!("enqueued jobs");
         Ok(())
@@ -270,9 +275,36 @@ impl PgStore {
         let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
         let job = row.as_ref().map(row_to_job);
 
-        increment_counter!("get", "queue" => queue.to_owned());
+        counter!("get", "queue" => queue.to_owned()).increment(1);
         debug!("got job");
         Ok(job)
+    }
+
+    /// Fetches the `run_id` of Job for purposes of v1->v2 backward compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
+    pub async fn get_run_id(&self, queue: &str, job_id: &str) -> Result<Option<Uuid>> {
+        let client = self.pool.get().await?;
+        let stmt = client
+            .prepare_cached(
+                "
+               SELECT run_id
+               FROM jobs
+               WHERE
+                    queue=$1 AND
+                    id=$2
+            ",
+            )
+            .await?;
+
+        let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
+        let run_id = row.as_ref().map(|row| row.get(0));
+
+        counter!("get_run_id", "queue" => queue.to_owned()).increment(1);
+        debug!("got run id");
+        Ok(run_id)
     }
 
     /// Checks and returns if a Job exists in the database with the provided queue and id.
@@ -297,7 +329,7 @@ impl PgStore {
 
         let exists: bool = client.query_one(&stmt, &[&queue, &job_id]).await?.get(0);
 
-        increment_counter!("exists", "queue" => queue.to_owned());
+        counter!("exists", "queue" => queue.to_owned()).increment(1);
         debug!("exists check job");
         Ok(exists)
     }
@@ -390,7 +422,8 @@ impl PgStore {
             // This is a possible indicator not enough consumers/processors on the calling side
             // and jobs are backed up for processing.
             if let Ok(d) = (now - to_processed).to_std() {
-                histogram!("latency", d, "queue" => j.queue.clone(), "type" => "to_processing");
+                histogram!("latency", "queue" => j.queue.clone(), "type" => "to_processing")
+                    .record(d);
             }
 
             jobs.push(j);
@@ -400,7 +433,7 @@ impl PgStore {
             debug!("fetched no jobs");
             Ok(None)
         } else {
-            counter!("fetched", jobs.len() as u64, "queue" => queue.to_owned());
+            counter!("fetched", "queue" => queue.to_owned()).increment(jobs.len() as u64);
             debug!(fetched_jobs = jobs.len(), "fetched next job(s)");
             Ok(Some(jobs))
         }
@@ -432,10 +465,10 @@ impl PgStore {
         if let Some(row) = row {
             let run_at = Utc.from_utc_datetime(&row.get(0));
 
-            increment_counter!("deleted", "queue" => queue.to_owned());
+            counter!("deleted", "queue" => queue.to_owned()).increment(1);
 
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => queue.to_owned(), "type" => "deleted");
+                histogram!("duration", "queue" => queue.to_owned(), "type" => "deleted").record(d);
             }
             debug!("deleted job");
         }
@@ -471,10 +504,11 @@ impl PgStore {
         if let Some(row) = row {
             let run_at = Utc.from_utc_datetime(&row.get(0));
 
-            increment_counter!("completed", "queue" => queue.to_owned());
+            counter!("completed", "queue" => queue.to_owned()).increment(1);
 
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => queue.to_owned(), "type" => "completed");
+                histogram!("duration", "queue" => queue.to_owned(), "type" => "completed")
+                    .record(d);
             }
             debug!("completed job");
         }
@@ -545,7 +579,7 @@ impl PgStore {
             transaction.commit().await?;
 
             for (queue, count) in counts {
-                counter!("requeue", count, "queue" => queue.to_string());
+                counter!("requeue", "queue" => queue.to_string()).increment(count);
             }
         } else {
             transaction.commit().await?;
@@ -553,7 +587,7 @@ impl PgStore {
 
         if let Some(run_at) = previous_run_at {
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => queue.to_string(), "type" => "requeue");
+                histogram!("duration", "queue" => queue.to_string(), "type" => "requeue").record(d);
             }
             debug!("requeue jobs");
         }
@@ -607,10 +641,10 @@ impl PgStore {
             .map(|row| Utc.from_utc_datetime(&row.get(0)));
 
         if let Some(run_at) = run_at {
-            increment_counter!("heartbeat", "queue" => queue.to_owned());
+            counter!("heartbeat", "queue" => queue.to_owned()).increment(1);
 
             if let Ok(d) = (Utc::now() - run_at).to_std() {
-                histogram!("duration", d, "queue" => queue.to_owned(), "type" => "running");
+                histogram!("duration", "queue" => queue.to_owned(), "type" => "running").record(d);
             }
             debug!("heartbeat job");
             Ok(())
@@ -707,7 +741,8 @@ impl PgStore {
             let queue: String = row.get(0);
             let count: i64 = row.get(1);
             debug!(queue = %queue, count = count, "retrying jobs");
-            counter!("retries", u64::try_from(count).unwrap_or_default(), "queue" => queue);
+            counter!("retries", "queue" => queue)
+                .increment(u64::try_from(count).unwrap_or_default());
         }
 
         let stmt = client
@@ -740,7 +775,8 @@ impl PgStore {
                 queue = %queue,
                 "deleted records from queue that reached their max retries"
             );
-            counter!("errors", u64::try_from(count).unwrap_or_default(), "queue" => queue, "type" => "max_retries");
+            counter!("errors", "queue" => queue, "type" => "max_retries")
+                .increment(u64::try_from(count).unwrap_or_default());
         }
         Ok(())
     }
@@ -926,56 +962,121 @@ fn is_retryable(e: tokio_postgres::Error) -> bool {
     }
 }
 
+#[derive(Debug)]
 struct AcceptAllTlsVerifier;
 
 impl ServerCertVerifier for AcceptAllTlsVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &Certificate,
-        _intermediates: &[Certificate],
-        _server_name: &ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
-        _now: SystemTime,
+        _now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         Ok(ServerCertVerified::assertion())
     }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
+#[derive(Debug)]
 pub struct NoHostnameTlsVerifier {
-    verifier: WebPkiVerifier,
+    verifier: Arc<WebPkiServerVerifier>,
 }
 
 impl ServerCertVerifier for NoHostnameTlsVerifier {
     fn verify_server_cert(
         &self,
-        end_entity: &Certificate,
-        intermediates: &[Certificate],
-        server_name: &ServerName,
-        scts: &mut dyn Iterator<Item = &[u8]>,
-        ocsp_response: &[u8],
-        now: SystemTime,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp: &[u8],
+        now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
-        match self.verifier.verify_server_cert(
-            end_entity,
-            intermediates,
-            server_name,
-            scts,
-            ocsp_response,
-            now,
-        ) {
+        match self
+            .verifier
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp, now)
+        {
             Err(rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName)) => {
                 Ok(ServerCertVerified::assertion())
             }
             res => res,
         }
     }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use chrono::{DurationRound, TimeDelta};
+
     use super::*;
-    use chrono::DurationRound;
 
     #[tokio::test]
     async fn test_reschedule_replace_pk_change() -> anyhow::Result<()> {
@@ -1248,7 +1349,7 @@ mod tests {
         assert_eq!(1, next.as_ref().unwrap().len());
         let next = &next.unwrap()[0];
 
-        let now = Utc::now().duration_trunc(chrono::Duration::milliseconds(100))?;
+        let now = Utc::now().duration_trunc(TimeDelta::try_milliseconds(100).unwrap())?;
         let mut reschedule = New {
             id: job_id.clone(),
             queue: queue.clone(),

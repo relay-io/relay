@@ -1,22 +1,25 @@
 //! The HTTP server for the relay.
-use axum::body::{Body, BoxBody};
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::{Json, Router};
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, head, patch, post, put};
-use axum::{Json, Router};
-use metrics::increment_counter;
+use metrics::counter;
+use serde::Deserialize;
+use serde_json::value::RawValue;
+use tokio::net::TcpListener;
+use tower_http::trace::TraceLayer;
+use tracing::{info, Level, span, Span};
+use uuid::Uuid;
+
 use relay_core::job::{EnqueueMode, New, OldV1};
 use relay_core::num::GtZeroI64;
 use relay_postgres::{Error as PostgresError, PgStore};
-use serde::Deserialize;
-use serde_json::value::RawValue;
-use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
-use tower_http::trace::TraceLayer;
-use tracing::{info, span, Level, Span};
-use uuid::Uuid;
 
 /// The internal HTTP server representation for Jobs.
 pub struct Server;
@@ -42,10 +45,10 @@ async fn enqueue_v2(
     params: Query<EnqueueQueryInfo>,
     jobs: Json<Vec<New<Box<RawValue>, Box<RawValue>>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "enqueue", "version" => "v2");
+    counter!("http_request", "endpoint" => "enqueue", "version" => "v2").increment(1);
 
     if let Err(e) = state.enqueue(params.0.enqueue_mode(), jobs.0.iter()).await {
-        increment_counter!("errors", "endpoint" => "enqueue", "type" => e.error_type());
+        counter!("errors", "endpoint" => "enqueue", "type" => e.error_type()).increment(1);
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -71,7 +74,8 @@ async fn get_job_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     match state.get(&queue, &id).await {
         Ok(job) => {
@@ -82,7 +86,7 @@ async fn get_job_v2(
             }
         }
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+            counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
@@ -102,7 +106,8 @@ async fn exists_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     match state.exists(&queue, &id).await {
         Ok(exists) => {
@@ -113,7 +118,7 @@ async fn exists_v2(
             }
         }
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+            counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
@@ -134,7 +139,7 @@ async fn heartbeat_v2(
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
     job_state: Option<Json<Box<RawValue>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v2").increment(1);
 
     let job_state = match job_state {
         None => None,
@@ -144,7 +149,7 @@ async fn heartbeat_v2(
         .heartbeat(&queue, &id, &run_id, job_state.as_deref())
         .await
     {
-        increment_counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+        counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
         match e {
             PostgresError::JobNotFound { .. } => {
                 (StatusCode::NOT_FOUND, e.to_string()).into_response()
@@ -172,13 +177,13 @@ async fn requeue(
     params: Query<EnqueueQueryInfo>,
     jobs: Json<Vec<New<Box<RawValue>, Box<RawValue>>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "requeue", "version" => "v2");
+    counter!("http_request", "endpoint" => "requeue", "version" => "v2").increment(1);
 
     if let Err(e) = state
         .requeue(params.0.enqueue_mode(), &queue, &id, &run_id, jobs.0.iter())
         .await
     {
-        increment_counter!("errors", "endpoint" => "requeue", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+        counter!("errors", "endpoint" => "requeue", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
         match e {
             PostgresError::JobExists { .. } => {
                 (StatusCode::CONFLICT, e.to_string()).into_response()
@@ -204,10 +209,11 @@ async fn delete_job_v2(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     if let Err(e) = state.delete(&queue, &id).await {
-        increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+        counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -230,10 +236,11 @@ async fn complete_job(
     State(state): State<Arc<PgStore>>,
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     if let Err(e) = state.complete(&queue, &id, &run_id).await {
-        increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+        counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -267,11 +274,12 @@ async fn next_v2(
     Path(queue): Path<String>,
     params: Query<NextQueryInfo>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v2");
+    counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v2")
+        .increment(1);
 
     match state.next(&queue, params.0.num_jobs).await {
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2");
+            counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v2").increment(1);
             if let PostgresError::Backend { .. } = e {
                 if e.is_retryable() {
                     (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response()
@@ -297,7 +305,7 @@ async fn enqueue_v1(
     State(state): State<Arc<PgStore>>,
     jobs: Json<Vec<OldV1<Box<RawValue>, Box<RawValue>>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "enqueue", "version" => "v1");
+    counter!("http_request", "endpoint" => "enqueue", "version" => "v1").increment(1);
 
     let mode = if jobs.len() == 1 {
         EnqueueMode::Unique
@@ -307,7 +315,8 @@ async fn enqueue_v1(
     let jobs = jobs.0.into_iter().map(New::from).collect::<Vec<_>>();
 
     if let Err(e) = state.enqueue(mode, jobs.iter()).await {
-        increment_counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2");
+        counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2")
+            .increment(1);
         match e {
             PostgresError::Backend { .. } => {
                 if e.is_retryable() {
@@ -333,12 +342,11 @@ async fn reschedule_v1(
     State(state): State<Arc<PgStore>>,
     job: Json<OldV1<Box<RawValue>, Box<RawValue>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone(), "version" => "v1").increment(1);
 
     // need to get run_id for new requeue logic.
-    let run_id = match state.get(&job.0.queue, &job.0.id).await {
-        Ok(Some(job)) if job.run_id.is_some() => job.run_id.unwrap(),
-        _ => return StatusCode::ACCEPTED.into_response(),
+    let Ok(Some(run_id)) = state.get_run_id(&job.0.queue, &job.0.id).await else {
+        return StatusCode::ACCEPTED.into_response();
     };
 
     let job = New::from(job.0);
@@ -353,7 +361,7 @@ async fn reschedule_v1(
         )
         .await
     {
-        increment_counter!("errors", "endpoint" => "enqueued", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+        counter!("errors", "endpoint" => "enqueued", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
         match e {
             PostgresError::JobExists { .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -379,10 +387,11 @@ async fn delete_job_v1(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v1")
+        .increment(1);
 
     if let Err(e) = state.delete(&queue, &id).await {
-        increment_counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+        counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
         match e {
             PostgresError::JobNotFound { .. } => {
                 (StatusCode::NOT_FOUND, e.to_string()).into_response()
@@ -409,18 +418,15 @@ async fn heartbeat_v1(
     Path((queue, id)): Path<(String, String)>,
     job_state: Option<Json<Box<RawValue>>>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v1").increment(1);
 
     // need to get run_id for new requeue logic.
-    let run_id = match state.get(&queue, &id).await {
-        Ok(Some(job)) if job.run_id.is_some() => job.run_id.unwrap(),
-        _ => {
-            return (
-                StatusCode::NOT_FOUND,
-                format!("job with id `{id}` not found in queue `{queue}`."),
-            )
-                .into_response()
-        }
+    let Ok(Some(run_id)) = state.get_run_id(&queue, &id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("job with id `{id}` not found in queue `{queue}`."),
+        )
+            .into_response();
     };
 
     let job_state = match job_state {
@@ -431,7 +437,7 @@ async fn heartbeat_v1(
         .heartbeat(&queue, &id, &run_id, job_state.as_deref())
         .await
     {
-        increment_counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+        counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
         match e {
             PostgresError::JobNotFound { .. } => {
                 (StatusCode::NOT_FOUND, e.to_string()).into_response()
@@ -457,7 +463,8 @@ async fn exists_v1(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v1")
+        .increment(1);
 
     match state.exists(&queue, &id).await {
         Ok(exists) => {
@@ -468,7 +475,7 @@ async fn exists_v1(
             }
         }
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+            counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
@@ -488,7 +495,8 @@ async fn get_job_v1(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v1")
+        .increment(1);
 
     match state.get(&queue, &id).await {
         Ok(job) => {
@@ -499,7 +507,7 @@ async fn get_job_v1(
             }
         }
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+            counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
             match e {
                 PostgresError::Backend { .. } => {
                     if e.is_retryable() {
@@ -520,11 +528,12 @@ async fn next_v1(
     Path(queue): Path<String>,
     params: Query<NextQueryInfo>,
 ) -> Response {
-    increment_counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v1");
+    counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v1")
+        .increment(1);
 
     match state.next(&queue, params.0.num_jobs).await {
         Err(e) => {
-            increment_counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1");
+            counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
             if let PostgresError::Backend { .. } = e {
                 if e.is_retryable() {
                     (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
@@ -559,12 +568,12 @@ impl Server {
     #[inline]
     pub async fn run<F>(backend: Arc<PgStore>, addr: &str, shutdown: F) -> anyhow::Result<()>
     where
-        F: Future<Output = ()>,
+        F: Future<Output = ()> + Send + 'static,
     {
         let app = Server::init_app(backend);
+        let listener = TcpListener::bind(addr).await?;
 
-        axum::Server::bind(&addr.parse().unwrap())
-            .serve(app.into_make_service())
+        axum::serve(listener, app)
             .with_graceful_shutdown(shutdown)
             .await
             .unwrap();
@@ -612,15 +621,13 @@ impl Server {
                             version = ?request.version(),
                         )
                     })
-                    .on_response(
-                        |response: &Response<BoxBody>, latency: Duration, _span: &Span| {
-                            info!(
-                                target: "response",
-                                status = response.status().as_u16(),
-                                latency = ?latency,
-                            );
-                        },
-                    ),
+                    .on_response(|response: &Response, latency: Duration, _span: &Span| {
+                        info!(
+                            target: "response",
+                            status = response.status().as_u16(),
+                            latency = ?latency,
+                        );
+                    }),
             )
             .with_state(backend)
     }
@@ -628,23 +635,25 @@ impl Server {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::ops::Add;
+
     use anyhow::{anyhow, Context};
-    use async_trait::async_trait;
-    use chrono::DurationRound;
+    use chrono::{DurationRound, TimeDelta};
     use chrono::Utc;
     use portpicker::pick_unused_port;
+    use tokio::sync::Mutex;
+    use tokio::task::JoinHandle;
+    use uuid::Uuid;
+
     use relay_client::http::client::{
         Builder as ClientBuilder, Client, Error as ClientError, JobHelper, Runner,
     };
     use relay_core::job::Existing;
     use relay_core::num::PositiveI32;
     use relay_postgres::PgStore;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
-    use std::ops::Add;
-    use tokio::sync::Mutex;
-    use tokio::task::JoinHandle;
-    use uuid::Uuid;
+
+    use super::*;
 
     /// Generates a `SocketAddr` on the IP 0.0.0.0, using a random port.
     pub fn new_random_socket_addr() -> anyhow::Result<SocketAddr> {
@@ -668,11 +677,10 @@ mod tests {
         let socket_address =
             new_random_socket_addr().expect("Cannot create socket address for use");
         let listener = TcpListener::bind(socket_address)
+            .await
             .with_context(|| "Failed to create TCPListener for TestServer")?;
         let server_address = socket_address.to_string();
-        let server = axum::Server::from_tcp(listener)
-            .with_context(|| "Failed to create ::axum::Server for TestServer")?
-            .serve(app.into_make_service());
+        let server = axum::serve(listener, app);
 
         let server_thread = tokio::spawn(async move {
             server.await.expect("Expect server to start serving");
@@ -686,7 +694,7 @@ mod tests {
     async fn test_oneshot_job_v2() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: New<(), i32> = New {
             id: Uuid::new_v4().to_string(),
@@ -743,7 +751,7 @@ mod tests {
     async fn test_requeue_v2() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: New<(), i32> = New {
             id: Uuid::new_v4().to_string(),
@@ -780,7 +788,7 @@ mod tests {
 
         jobs.first_mut().unwrap().run_at = Some(
             Utc::now()
-                .duration_trunc(chrono::Duration::milliseconds(1))
+                .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
                 .unwrap(),
         );
         client
@@ -967,7 +975,7 @@ mod tests {
             .expect("valid default HTTP Client configuration");
 
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: OldV1<(), i32> = OldV1 {
             id: Uuid::new_v4().to_string(),
@@ -983,7 +991,7 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/jobs");
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
@@ -991,7 +999,7 @@ mod tests {
             &jobs.first().unwrap().id
         );
         let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::OK.as_u16());
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
@@ -1024,7 +1032,7 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
         let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND.as_u16());
 
         Ok(())
     }
@@ -1045,7 +1053,7 @@ mod tests {
             .expect("valid default HTTP Client configuration");
 
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: OldV1<(), i32> = OldV1 {
             id: Uuid::new_v4().to_string(),
@@ -1061,7 +1069,7 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/jobs");
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
@@ -1069,7 +1077,7 @@ mod tests {
             &jobs.first().unwrap().id
         );
         let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::OK.as_u16());
 
         let url = format!(
             "{base_url}/v1/queues/{}/jobs/{}",
@@ -1091,8 +1099,8 @@ mod tests {
         assert_eq!(j2, j);
 
         let now = Utc::now()
-            .add(chrono::Duration::days(1))
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .add(TimeDelta::try_days(1).unwrap())
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         jobs.first_mut().unwrap().state = Some(4);
         jobs.first_mut().unwrap().run_at = Some(now);
@@ -1109,7 +1117,7 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
         let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND.as_u16());
 
         Ok(())
     }
@@ -1130,7 +1138,7 @@ mod tests {
             .expect("valid default HTTP Client configuration");
 
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: OldV1<(), i32> = OldV1 {
             id: Uuid::new_v4().to_string(),
@@ -1146,17 +1154,17 @@ mod tests {
 
         let url = format!("{base_url}/v1/queues/jobs");
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
 
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.status(), StatusCode::CONFLICT.as_u16());
 
         // test sending more than one and will be ignored
         let job = jobs.pop().unwrap();
         let jobs = vec![job.clone(), job.clone()];
 
         let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
         Ok(())
     }
 
@@ -1164,7 +1172,7 @@ mod tests {
     async fn test_poller() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let now = Utc::now()
-            .duration_trunc(chrono::Duration::milliseconds(1))
+            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let queue = Uuid::new_v4().to_string();
         let j: New<i32, i32> = New {
@@ -1254,7 +1262,6 @@ mod tests {
         done: tokio::sync::mpsc::Sender<()>,
     }
 
-    #[async_trait]
     impl Runner<i32, i32> for mockRunner {
         async fn run(&self, helper: JobHelper<i32, i32>) {
             let mut l = 0;
