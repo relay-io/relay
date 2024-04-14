@@ -1,9 +1,9 @@
-use std::{str::FromStr, time::Duration};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::{str::FromStr, time::Duration};
 
 use chrono::{TimeZone, Utc};
 use deadpool_postgres::{
@@ -12,15 +12,15 @@ use deadpool_postgres::{
 };
 use metrics::{counter, histogram};
 use pg_interval::Interval;
-use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, TrustAnchor, UnixTime};
+use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
 use serde_json::value::RawValue;
-use tokio_postgres::{Config as PostgresConfig, Row, Statement};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::{Json, ToSql};
+use tokio_postgres::{Config as PostgresConfig, Row, Statement};
 use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -29,21 +29,15 @@ use relay_core::job::{EnqueueMode, Existing as RelayExisting, New as RelayNew};
 use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
 
 use crate::errors::{Error, Result};
-use crate::migrations::{Migration, run_migrations};
+use crate::migrations::{run_migrations, Migration};
 
 type Existing = RelayExisting<Box<RawValue>, Box<RawValue>>;
 type New = RelayNew<Box<RawValue>, Box<RawValue>>;
 
-const MIGRATIONS: [Migration; 2] = [
-    Migration::new(
-        "1678464484380_initialize.sql",
-        include_str!("../migrations/1678464484380_initialize.sql"),
-    ),
-    Migration::new(
-        "1697429987001_v2.sql",
-        include_str!("../migrations/1697429987001_v2.sql"),
-    ),
-];
+const MIGRATIONS: [Migration; 1] = [Migration::new(
+    "1713068414708_v3_initialize.sql",
+    include_str!("../migrations/1713068414708_v3_initialize.sql"),
+)];
 
 /// Postgres backing store
 pub struct PgStore {
@@ -162,8 +156,6 @@ impl PgStore {
         Ok(Self { pool })
     }
 
-    // TODO: Update doc comments for existing before continuing.
-
     #[inline]
     async fn enqueue_internal<'a>(
         &self,
@@ -278,33 +270,6 @@ impl PgStore {
         counter!("get", "queue" => queue.to_owned()).increment(1);
         debug!("got job");
         Ok(job)
-    }
-
-    /// Fetches the `run_id` of Job for purposes of v1->v2 backward compatibility.
-    ///
-    /// # Errors
-    ///
-    /// Will return `Err` if there is any communication issues with the backend Postgres DB.
-    pub async fn get_run_id(&self, queue: &str, job_id: &str) -> Result<Option<Uuid>> {
-        let client = self.pool.get().await?;
-        let stmt = client
-            .prepare_cached(
-                "
-               SELECT run_id
-               FROM jobs
-               WHERE
-                    queue=$1 AND
-                    id=$2
-            ",
-            )
-            .await?;
-
-        let row = client.query_opt(&stmt, &[&queue, &job_id]).await?;
-        let run_id = row.as_ref().map(|row| row.get(0));
-
-        counter!("get_run_id", "queue" => queue.to_owned()).increment(1);
-        debug!("got run id");
-        Ok(run_id)
     }
 
     /// Checks and returns if a Job exists in the database with the provided queue and id.

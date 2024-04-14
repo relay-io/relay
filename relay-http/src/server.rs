@@ -1,23 +1,22 @@
 //! The HTTP server for the relay.
-use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
-
-use axum::{Json, Router};
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, head, patch, post, put};
+use axum::{Json, Router};
 use metrics::counter;
 use serde::Deserialize;
 use serde_json::value::RawValue;
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
-use tracing::{info, Level, span, Span};
+use tracing::{info, span, Level, Span};
 use uuid::Uuid;
 
-use relay_core::job::{EnqueueMode, New, OldV1};
+use relay_core::job::{EnqueueMode, New};
 use relay_core::num::GtZeroI64;
 use relay_postgres::{Error as PostgresError, PgStore};
 
@@ -40,7 +39,7 @@ impl EnqueueQueryInfo {
 }
 
 #[tracing::instrument(name = "http_enqueue_v2", level = "debug", skip_all)]
-async fn enqueue_v2(
+async fn enqueue(
     State(state): State<Arc<PgStore>>,
     params: Query<EnqueueQueryInfo>,
     jobs: Json<Vec<New<Box<RawValue>, Box<RawValue>>>>,
@@ -70,7 +69,7 @@ async fn enqueue_v2(
 }
 
 #[tracing::instrument(name = "http_get_v2", level = "debug", skip_all)]
-async fn get_job_v2(
+async fn get_job(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
@@ -102,7 +101,7 @@ async fn get_job_v2(
 }
 
 #[tracing::instrument(name = "http_exists_v2", level = "debug", skip_all)]
-async fn exists_v2(
+async fn exists(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
@@ -134,7 +133,7 @@ async fn exists_v2(
 }
 
 #[tracing::instrument(name = "http_heartbeat_v2", level = "debug", skip_all)]
-async fn heartbeat_v2(
+async fn heartbeat(
     State(state): State<Arc<PgStore>>,
     Path((queue, id, run_id)): Path<(String, String, Uuid)>,
     job_state: Option<Json<Box<RawValue>>>,
@@ -205,7 +204,7 @@ async fn requeue(
 }
 
 #[tracing::instrument(name = "http_delete_v2", level = "debug", skip_all)]
-async fn delete_job_v2(
+async fn delete_job(
     State(state): State<Arc<PgStore>>,
     Path((queue, id)): Path<(String, String)>,
 ) -> Response {
@@ -269,7 +268,7 @@ const fn default_num_jobs() -> GtZeroI64 {
 }
 
 #[tracing::instrument(name = "http_next_v2", level = "debug", skip_all)]
-async fn next_v2(
+async fn next(
     State(state): State<Arc<PgStore>>,
     Path(queue): Path<String>,
     params: Query<NextQueryInfo>,
@@ -300,260 +299,6 @@ async fn next_v2(
 #[allow(clippy::unused_async)]
 async fn health() {}
 
-#[tracing::instrument(name = "http_enqueue_v1", level = "debug", skip_all)]
-async fn enqueue_v1(
-    State(state): State<Arc<PgStore>>,
-    jobs: Json<Vec<OldV1<Box<RawValue>, Box<RawValue>>>>,
-) -> Response {
-    counter!("http_request", "endpoint" => "enqueue", "version" => "v1").increment(1);
-
-    let mode = if jobs.len() == 1 {
-        EnqueueMode::Unique
-    } else {
-        EnqueueMode::Ignore
-    };
-    let jobs = jobs.0.into_iter().map(New::from).collect::<Vec<_>>();
-
-    if let Err(e) = state.enqueue(mode, jobs.iter()).await {
-        counter!("errors", "endpoint" => "enqueue", "type" => e.error_type(), "version" => "v2")
-            .increment(1);
-        match e {
-            PostgresError::Backend { .. } => {
-                if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
-                } else {
-                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
-                }
-            }
-            PostgresError::JobExists { .. } => {
-                (StatusCode::CONFLICT, e.to_string()).into_response()
-            }
-            PostgresError::JobNotFound { .. } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            }
-        }
-    } else {
-        StatusCode::ACCEPTED.into_response()
-    }
-}
-
-#[tracing::instrument(name = "http_reschedule_v1", level = "debug", skip_all)]
-async fn reschedule_v1(
-    State(state): State<Arc<PgStore>>,
-    job: Json<OldV1<Box<RawValue>, Box<RawValue>>>,
-) -> Response {
-    counter!("http_request", "endpoint" => "reschedule", "queue" => job.0.queue.clone(), "version" => "v1").increment(1);
-
-    // need to get run_id for new requeue logic.
-    let Ok(Some(run_id)) = state.get_run_id(&job.0.queue, &job.0.id).await else {
-        return StatusCode::ACCEPTED.into_response();
-    };
-
-    let job = New::from(job.0);
-
-    if let Err(e) = state
-        .requeue(
-            EnqueueMode::Replace,
-            &job.queue,
-            &job.id,
-            &run_id,
-            [&job].into_iter(),
-        )
-        .await
-    {
-        counter!("errors", "endpoint" => "enqueued", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
-        match e {
-            PostgresError::JobExists { .. } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            }
-            PostgresError::Backend { .. } => {
-                if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
-                } else {
-                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
-                }
-            }
-            PostgresError::JobNotFound { .. } => {
-                (StatusCode::NOT_FOUND, e.to_string()).into_response()
-            }
-        }
-    } else {
-        StatusCode::ACCEPTED.into_response()
-    }
-}
-
-#[tracing::instrument(name = "http_delete_v1", level = "debug", skip_all)]
-async fn delete_job_v1(
-    State(state): State<Arc<PgStore>>,
-    Path((queue, id)): Path<(String, String)>,
-) -> Response {
-    counter!("http_request", "endpoint" => "delete", "queue" => queue.clone(), "version" => "v1")
-        .increment(1);
-
-    if let Err(e) = state.delete(&queue, &id).await {
-        counter!("errors", "endpoint" => "delete", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
-        match e {
-            PostgresError::JobNotFound { .. } => {
-                (StatusCode::NOT_FOUND, e.to_string()).into_response()
-            }
-            PostgresError::Backend { .. } => {
-                if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
-                } else {
-                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
-                }
-            }
-            PostgresError::JobExists { .. } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            }
-        }
-    } else {
-        StatusCode::OK.into_response()
-    }
-}
-
-#[tracing::instrument(name = "http_heartbeat_v1", level = "debug", skip_all)]
-async fn heartbeat_v1(
-    State(state): State<Arc<PgStore>>,
-    Path((queue, id)): Path<(String, String)>,
-    job_state: Option<Json<Box<RawValue>>>,
-) -> Response {
-    counter!("http_request", "endpoint" => "heartbeat", "queue" => queue.clone(), "version" => "v1").increment(1);
-
-    // need to get run_id for new requeue logic.
-    let Ok(Some(run_id)) = state.get_run_id(&queue, &id).await else {
-        return (
-            StatusCode::NOT_FOUND,
-            format!("job with id `{id}` not found in queue `{queue}`."),
-        )
-            .into_response();
-    };
-
-    let job_state = match job_state {
-        None => None,
-        Some(job_state) => Some(job_state.0),
-    };
-    if let Err(e) = state
-        .heartbeat(&queue, &id, &run_id, job_state.as_deref())
-        .await
-    {
-        counter!("errors", "endpoint" => "heartbeat", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
-        match e {
-            PostgresError::JobNotFound { .. } => {
-                (StatusCode::NOT_FOUND, e.to_string()).into_response()
-            }
-            PostgresError::Backend { .. } => {
-                if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
-                } else {
-                    (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
-                }
-            }
-            PostgresError::JobExists { .. } => {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            }
-        }
-    } else {
-        StatusCode::ACCEPTED.into_response()
-    }
-}
-
-#[tracing::instrument(name = "http_exists_v1", level = "debug", skip_all)]
-async fn exists_v1(
-    State(state): State<Arc<PgStore>>,
-    Path((queue, id)): Path<(String, String)>,
-) -> Response {
-    counter!("http_request", "endpoint" => "exists", "queue" => queue.clone(), "version" => "v1")
-        .increment(1);
-
-    match state.exists(&queue, &id).await {
-        Ok(exists) => {
-            if exists {
-                StatusCode::OK.into_response()
-            } else {
-                StatusCode::NOT_FOUND.into_response()
-            }
-        }
-        Err(e) => {
-            counter!("errors", "endpoint" => "exists", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
-            match e {
-                PostgresError::Backend { .. } => {
-                    if e.is_retryable() {
-                        (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
-                    } else {
-                        (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
-                    }
-                }
-                _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-            }
-        }
-    }
-}
-
-#[tracing::instrument(name = "http_get_v1", level = "debug", skip_all)]
-async fn get_job_v1(
-    State(state): State<Arc<PgStore>>,
-    Path((queue, id)): Path<(String, String)>,
-) -> Response {
-    counter!("http_request", "endpoint" => "get", "queue" => queue.clone(), "version" => "v1")
-        .increment(1);
-
-    match state.get(&queue, &id).await {
-        Ok(job) => {
-            if let Some(job) = job {
-                Json(OldV1::from(job)).into_response()
-            } else {
-                StatusCode::NOT_FOUND.into_response()
-            }
-        }
-        Err(e) => {
-            counter!("errors", "endpoint" => "get", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
-            match e {
-                PostgresError::Backend { .. } => {
-                    if e.is_retryable() {
-                        (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
-                    } else {
-                        (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response()
-                    }
-                }
-                _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-            }
-        }
-    }
-}
-
-#[tracing::instrument(name = "http_next_v1", level = "debug", skip_all)]
-async fn next_v1(
-    State(state): State<Arc<PgStore>>,
-    Path(queue): Path<String>,
-    params: Query<NextQueryInfo>,
-) -> Response {
-    counter!("http_request", "endpoint" => "next", "queue" => queue.clone(), "version" => "v1")
-        .increment(1);
-
-    match state.next(&queue, params.0.num_jobs).await {
-        Err(e) => {
-            counter!("errors", "endpoint" => "next", "type" => e.error_type(), "queue" => e.queue(), "version" => "v1").increment(1);
-            if let PostgresError::Backend { .. } = e {
-                if e.is_retryable() {
-                    (StatusCode::TOO_MANY_REQUESTS, e.to_string()).into_response()
-                } else {
-                    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-                }
-            } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-            }
-        }
-        Ok(job) => match job {
-            None => StatusCode::NO_CONTENT.into_response(),
-            Some(jobs) => {
-                let jobs = jobs.into_iter().map(OldV1::from).collect::<Vec<_>>();
-                (StatusCode::OK, Json(jobs)).into_response()
-            }
-        },
-    }
-}
-
 impl Server {
     /// starts the HTTP server and waits for a shutdown signal before returning.
     ///
@@ -582,23 +327,16 @@ impl Server {
 
     pub(crate) fn init_app(backend: Arc<PgStore>) -> Router {
         Router::new()
-            .route("/v1/queues/jobs", post(enqueue_v1))
-            .route("/v1/queues/jobs", put(reschedule_v1))
-            .route("/v1/queues/:queue/jobs", get(next_v1))
-            .route("/v1/queues/:queue/jobs/:id", head(exists_v1))
-            .route("/v1/queues/:queue/jobs/:id", get(get_job_v1))
-            .route("/v1/queues/:queue/jobs/:id", patch(heartbeat_v1))
-            .route("/v1/queues/:queue/jobs/:id", delete(delete_job_v1))
-            .route("/v2/queues/jobs", post(enqueue_v2))
+            .route("/v2/queues/jobs", post(enqueue))
             .route("/v2/queues/:queue/jobs/:id/run-id/:run_id", put(requeue))
-            .route("/v2/queues/:queue/jobs", get(next_v2))
-            .route("/v2/queues/:queue/jobs/:id", head(exists_v2))
-            .route("/v2/queues/:queue/jobs/:id", get(get_job_v2))
+            .route("/v2/queues/:queue/jobs", get(next))
+            .route("/v2/queues/:queue/jobs/:id", head(exists))
+            .route("/v2/queues/:queue/jobs/:id", get(get_job))
             .route(
                 "/v2/queues/:queue/jobs/:id/run-id/:run_id",
-                patch(heartbeat_v2),
+                patch(heartbeat),
             )
-            .route("/v2/queues/:queue/jobs/:id", delete(delete_job_v2))
+            .route("/v2/queues/:queue/jobs/:id", delete(delete_job))
             .route(
                 "/v2/queues/:queue/jobs/:id/run-id/:run_id",
                 delete(complete_job),
@@ -636,11 +374,10 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::ops::Add;
 
     use anyhow::{anyhow, Context};
-    use chrono::{DurationRound, TimeDelta};
     use chrono::Utc;
+    use chrono::{DurationRound, TimeDelta};
     use portpicker::pick_unused_port;
     use tokio::sync::Mutex;
     use tokio::task::JoinHandle;
@@ -960,215 +697,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_oneshot_job_v1() -> anyhow::Result<()> {
-        let (_srv, base_url) = init_server_only().await?;
-
-        let client = reqwest::ClientBuilder::default()
-            .timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(10))
-            .tcp_keepalive(Duration::from_secs(60))
-            .http2_keep_alive_timeout(Duration::from_secs(60))
-            .http2_keep_alive_interval(Duration::from_secs(5))
-            .http2_keep_alive_while_idle(true)
-            .pool_max_idle_per_host(512)
-            .build()
-            .expect("valid default HTTP Client configuration");
-
-        let now = Utc::now()
-            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
-            .unwrap();
-        let job: OldV1<(), i32> = OldV1 {
-            id: Uuid::new_v4().to_string(),
-            queue: Uuid::new_v4().to_string(),
-            timeout: 30,
-            max_retries: -1,
-            payload: (),
-            state: None,
-            updated_at: None,
-            run_at: Some(now),
-        };
-        let jobs = vec![job];
-
-        let url = format!("{base_url}/v1/queues/jobs");
-        let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
-
-        let url = format!(
-            "{base_url}/v1/queues/{}/jobs/{}",
-            &jobs.first().unwrap().queue,
-            &jobs.first().unwrap().id
-        );
-        let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::OK.as_u16());
-
-        let url = format!(
-            "{base_url}/v1/queues/{}/jobs/{}",
-            &jobs.first().unwrap().queue,
-            &jobs.first().unwrap().id
-        );
-        let mut j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
-        assert!(j.updated_at.unwrap() >= now);
-        assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
-        assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
-        assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
-
-        let url = format!("{base_url}/v1/queues/{}/jobs?num_jobs=10", &j.queue);
-        let mut jobs: Vec<OldV1<(), i32>> = client.get(&url).send().await?.json().await?;
-        assert_eq!(jobs.len(), 1);
-
-        let j2 = jobs.pop().unwrap();
-        j.updated_at = j2.updated_at;
-        assert_eq!(j2, j);
-
-        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
-        client.patch(&url).json(&Some(3)).send().await?;
-
-        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
-        let j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
-        assert_eq!(j.state, Some(3));
-
-        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
-        client.delete(&url).send().await?;
-
-        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
-        let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND.as_u16());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_reschedule_job_v1() -> anyhow::Result<()> {
-        let (_srv, base_url) = init_server_only().await?;
-
-        let client = reqwest::ClientBuilder::default()
-            .timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(10))
-            .tcp_keepalive(Duration::from_secs(60))
-            .http2_keep_alive_timeout(Duration::from_secs(60))
-            .http2_keep_alive_interval(Duration::from_secs(5))
-            .http2_keep_alive_while_idle(true)
-            .pool_max_idle_per_host(512)
-            .build()
-            .expect("valid default HTTP Client configuration");
-
-        let now = Utc::now()
-            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
-            .unwrap();
-        let job: OldV1<(), i32> = OldV1 {
-            id: Uuid::new_v4().to_string(),
-            queue: Uuid::new_v4().to_string(),
-            timeout: 30,
-            max_retries: -1,
-            payload: (),
-            state: None,
-            updated_at: None,
-            run_at: Some(now),
-        };
-        let mut jobs = vec![job];
-
-        let url = format!("{base_url}/v1/queues/jobs");
-        let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
-
-        let url = format!(
-            "{base_url}/v1/queues/{}/jobs/{}",
-            &jobs.first().unwrap().queue,
-            &jobs.first().unwrap().id
-        );
-        let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::OK.as_u16());
-
-        let url = format!(
-            "{base_url}/v1/queues/{}/jobs/{}",
-            &jobs.first().unwrap().queue,
-            &jobs.first().unwrap().id
-        );
-        let mut j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
-        assert!(j.updated_at.unwrap() >= now);
-        assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
-        assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
-        assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
-
-        let url = format!("{base_url}/v1/queues/{}/jobs?num_jobs=10", &j.queue);
-        let mut polled_jobs: Vec<OldV1<(), i32>> = client.get(&url).send().await?.json().await?;
-        assert_eq!(polled_jobs.len(), 1);
-
-        let j2 = polled_jobs.pop().unwrap();
-        j.updated_at = j2.updated_at;
-        assert_eq!(j2, j);
-
-        let now = Utc::now()
-            .add(TimeDelta::try_days(1).unwrap())
-            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
-            .unwrap();
-        jobs.first_mut().unwrap().state = Some(4);
-        jobs.first_mut().unwrap().run_at = Some(now);
-        let url = format!("{base_url}/v1/queues/jobs");
-        client.put(&url).json(&jobs.first().unwrap()).send().await?;
-
-        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
-        let j: OldV1<(), i32> = client.get(&url).send().await?.json().await?;
-        assert_eq!(j.state, Some(4));
-        assert_eq!(j.run_at.unwrap(), now);
-
-        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
-        client.delete(&url).send().await?;
-
-        let url = format!("{base_url}/v1/queues/{}/jobs/{}", &j2.queue, &j2.id);
-        let resp = client.head(&url).send().await?;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND.as_u16());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_enqueue_modes_job_v1() -> anyhow::Result<()> {
-        let (_srv, base_url) = init_server_only().await?;
-
-        let client = reqwest::ClientBuilder::default()
-            .timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(10))
-            .tcp_keepalive(Duration::from_secs(60))
-            .http2_keep_alive_timeout(Duration::from_secs(60))
-            .http2_keep_alive_interval(Duration::from_secs(5))
-            .http2_keep_alive_while_idle(true)
-            .pool_max_idle_per_host(512)
-            .build()
-            .expect("valid default HTTP Client configuration");
-
-        let now = Utc::now()
-            .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
-            .unwrap();
-        let job: OldV1<(), i32> = OldV1 {
-            id: Uuid::new_v4().to_string(),
-            queue: Uuid::new_v4().to_string(),
-            timeout: 30,
-            max_retries: -1,
-            payload: (),
-            state: None,
-            updated_at: None,
-            run_at: Some(now),
-        };
-        let mut jobs = vec![job];
-
-        let url = format!("{base_url}/v1/queues/jobs");
-        let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
-
-        let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::CONFLICT.as_u16());
-
-        // test sending more than one and will be ignored
-        let job = jobs.pop().unwrap();
-        let jobs = vec![job.clone(), job.clone()];
-
-        let resp = client.post(&url).json(&jobs).send().await?;
-        assert_eq!(resp.status(), StatusCode::ACCEPTED.as_u16());
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_poller() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let now = Utc::now()
@@ -1199,7 +727,7 @@ mod tests {
 
         let helpers = Arc::new(Mutex::new(Vec::new()));
         let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
-        let mr = mockRunner {
+        let mr = MockRunner {
             helpers: helpers.clone(),
             done: tx,
         };
@@ -1257,14 +785,14 @@ mod tests {
         Ok(())
     }
 
-    struct mockRunner {
+    struct MockRunner {
         helpers: Arc<Mutex<Vec<JobHelper<i32, i32>>>>,
         done: tokio::sync::mpsc::Sender<()>,
     }
 
-    impl Runner<i32, i32> for mockRunner {
+    impl Runner<i32, i32> for MockRunner {
         async fn run(&self, helper: JobHelper<i32, i32>) {
-            let mut l = 0;
+            let l;
             {
                 let mut lock = self.helpers.lock().await;
                 lock.push(helper);
