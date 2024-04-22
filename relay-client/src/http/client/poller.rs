@@ -59,7 +59,11 @@ where
     /// - The `Existing` job doesn't exist.
     pub async fn complete(&self) -> Result<()> {
         self.client
-            .complete(&self.job.queue, &self.job.id, &self.job.run_id.unwrap())
+            .complete(
+                &self.job.identifier.queue,
+                &self.job.identifier.id,
+                &self.job.run_id.unwrap(),
+            )
             .await
     }
 
@@ -70,7 +74,9 @@ where
     /// Will return `Err` on:
     /// - an unrecoverable network error.
     pub async fn delete(&self) -> Result<()> {
-        self.client.delete(&self.job.queue, &self.job.id).await
+        self.client
+            .delete(&self.job.identifier.queue, &self.job.identifier.id)
+            .await
     }
 
     /// Returns if the `Existing` job still exists.
@@ -79,7 +85,9 @@ where
     ///
     /// Will return `Err` on an unrecoverable network error.
     pub async fn exists(&self) -> Result<bool> {
-        self.client.exists(&self.job.queue, &self.job.id).await
+        self.client
+            .exists(&self.job.identifier.queue, &self.job.identifier.id)
+            .await
     }
 
     /// Sends a heartbeat request to this in-flight `Existing` job indicating it is still processing, resetting
@@ -97,8 +105,8 @@ where
     pub async fn heartbeat(&self, state: Option<S>) -> Result<()> {
         self.client
             .heartbeat(
-                &self.job.queue,
-                &self.job.id,
+                &self.job.identifier.queue,
+                &self.job.identifier.id,
                 &self.job.run_id.unwrap(),
                 state,
             )
@@ -139,8 +147,8 @@ where
         self.client
             .requeue(
                 mode,
-                &self.job.queue,
-                &self.job.id,
+                &self.job.identifier.queue,
+                &self.job.identifier.id,
                 &self.job.run_id.unwrap(),
                 jobs,
             )

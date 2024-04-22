@@ -386,7 +386,7 @@ mod tests {
     use relay_client::http::client::{
         Builder as ClientBuilder, Client, Error as ClientError, JobHelper, Runner,
     };
-    use relay_core::job::Existing;
+    use relay_core::job::{Existing, Identifier};
     use relay_core::num::PositiveI32;
     use relay_postgres::PgStore;
 
@@ -434,8 +434,10 @@ mod tests {
             .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: New<(), i32> = New {
-            id: Uuid::new_v4().to_string(),
-            queue: Uuid::new_v4().to_string(),
+            identifier: Identifier {
+                id: Uuid::new_v4().to_string(),
+                queue: Uuid::new_v4().to_string(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: None,
             payload: (),
@@ -447,21 +449,33 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
 
         let exists = client
-            .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+            .exists(
+                &jobs.first().unwrap().identifier.queue,
+                &jobs.first().unwrap().identifier.id,
+            )
             .await?;
         assert!(exists);
 
         let mut j = client
-            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+            .get::<(), i32>(
+                &jobs.first().unwrap().identifier.queue,
+                &jobs.first().unwrap().identifier.id,
+            )
             .await?
             .unwrap();
         assert!(j.updated_at >= now);
-        assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
-        assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
+        assert_eq!(
+            &jobs.first().unwrap().identifier.id,
+            j.identifier.id.as_str()
+        );
+        assert_eq!(
+            &jobs.first().unwrap().identifier.queue,
+            j.identifier.queue.as_str()
+        );
         assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
 
         let mut jobs = client
-            .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
+            .poll::<(), i32>(&jobs.first().unwrap().identifier.queue, 10)
             .await?;
         assert_eq!(jobs.len(), 1);
 
@@ -472,14 +486,22 @@ mod tests {
         assert!(j2.run_id.is_some());
 
         client
-            .heartbeat(&j2.queue, &j2.id, &j2.run_id.unwrap(), Some(3))
+            .heartbeat(
+                &j2.identifier.queue,
+                &j2.identifier.id,
+                &j2.run_id.unwrap(),
+                Some(3),
+            )
             .await?;
 
-        let j = client.get::<(), i32>(&j2.queue, &j2.id).await?.unwrap();
+        let j = client
+            .get::<(), i32>(&j2.identifier.queue, &j2.identifier.id)
+            .await?
+            .unwrap();
         assert_eq!(j.state, Some(3));
 
         client
-            .complete(&j2.queue, &j2.id, &j2.run_id.unwrap())
+            .complete(&j2.identifier.queue, &j2.identifier.id, &j2.run_id.unwrap())
             .await?;
         Ok(())
     }
@@ -491,8 +513,10 @@ mod tests {
             .duration_trunc(TimeDelta::try_milliseconds(1).unwrap())
             .unwrap();
         let job: New<(), i32> = New {
-            id: Uuid::new_v4().to_string(),
-            queue: Uuid::new_v4().to_string(),
+            identifier: Identifier {
+                id: Uuid::new_v4().to_string(),
+                queue: Uuid::new_v4().to_string(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: None,
             payload: (),
@@ -504,16 +528,25 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
 
         let mut j = client
-            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+            .get::<(), i32>(
+                &jobs.first().unwrap().identifier.queue,
+                &jobs.first().unwrap().identifier.id,
+            )
             .await?
             .unwrap();
         assert!(j.updated_at >= now);
-        assert_eq!(&jobs.first().unwrap().id, j.id.as_str());
-        assert_eq!(&jobs.first().unwrap().queue, j.queue.as_str());
+        assert_eq!(
+            &jobs.first().unwrap().identifier.id,
+            j.identifier.id.as_str()
+        );
+        assert_eq!(
+            &jobs.first().unwrap().identifier.queue,
+            j.identifier.queue.as_str()
+        );
         assert_eq!(&jobs.first().unwrap().timeout, &j.timeout);
 
         let mut polled_jobs = client
-            .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
+            .poll::<(), i32>(&jobs.first().unwrap().identifier.queue, 10)
             .await?;
         assert_eq!(polled_jobs.len(), 1);
 
@@ -531,14 +564,17 @@ mod tests {
         client
             .requeue(
                 EnqueueMode::Replace,
-                &j2.queue,
-                &j2.id,
+                &j2.identifier.queue,
+                &j2.identifier.id,
                 &j2.run_id.unwrap(),
                 &jobs,
             )
             .await?;
 
-        let mut j = client.get::<(), i32>(&j2.queue, &j2.id).await?.unwrap();
+        let mut j = client
+            .get::<(), i32>(&j2.identifier.queue, &j2.identifier.id)
+            .await?
+            .unwrap();
         assert!(j.updated_at >= j2.updated_at);
         assert!(j.created_at >= j2.created_at);
         assert!(j.run_id.is_none());
@@ -548,7 +584,9 @@ mod tests {
         j.run_at = j2.run_at;
         assert_eq!(j, j2);
 
-        client.delete(&j2.queue, &j2.id).await?;
+        client
+            .delete(&j2.identifier.queue, &j2.identifier.id)
+            .await?;
         Ok(())
     }
 
@@ -556,8 +594,10 @@ mod tests {
     async fn test_enqueue_modes_v2() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let job: New<(), i32> = New {
-            id: Uuid::new_v4().to_string(),
-            queue: Uuid::new_v4().to_string(),
+            identifier: Identifier {
+                id: Uuid::new_v4().to_string(),
+                queue: Uuid::new_v4().to_string(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: None,
             payload: (),
@@ -571,13 +611,16 @@ mod tests {
         assert_eq!(result, Err(ClientError::JobExists));
 
         let polled_jobs = client
-            .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
+            .poll::<(), i32>(&jobs.first().unwrap().identifier.queue, 10)
             .await?;
         assert_eq!(polled_jobs.len(), 1);
         assert_eq!(polled_jobs.first().unwrap().state, None);
 
         let j2 = client
-            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+            .get::<(), i32>(
+                &jobs.first().unwrap().identifier.queue,
+                &jobs.first().unwrap().identifier.id,
+            )
             .await?
             .unwrap();
         assert!(j2.run_id.is_some());
@@ -588,7 +631,10 @@ mod tests {
         client.enqueue(EnqueueMode::Replace, &jobs).await?; // should not error
 
         let j2 = client
-            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+            .get::<(), i32>(
+                &jobs.first().unwrap().identifier.queue,
+                &jobs.first().unwrap().identifier.id,
+            )
             .await?
             .unwrap();
         assert!(j2.run_id.is_none());
@@ -599,7 +645,10 @@ mod tests {
         client.enqueue(EnqueueMode::Ignore, &jobs).await?; // should not error
 
         let j2 = client
-            .get::<(), i32>(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+            .get::<(), i32>(
+                &jobs.first().unwrap().identifier.queue,
+                &jobs.first().unwrap().identifier.id,
+            )
             .await?
             .unwrap();
         assert!(j2.run_id.is_none());
@@ -612,8 +661,10 @@ mod tests {
     async fn test_delete_v2() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let job: New<(), i32> = New {
-            id: Uuid::new_v4().to_string(),
-            queue: Uuid::new_v4().to_string(),
+            identifier: Identifier {
+                id: Uuid::new_v4().to_string(),
+                queue: Uuid::new_v4().to_string(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: None,
             payload: (),
@@ -625,17 +676,26 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
         assert!(
             client
-                .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+                .exists(
+                    &jobs.first().unwrap().identifier.queue,
+                    &jobs.first().unwrap().identifier.id
+                )
                 .await?
         );
 
         client
-            .delete(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+            .delete(
+                &jobs.first().unwrap().identifier.queue,
+                &jobs.first().unwrap().identifier.id,
+            )
             .await?;
 
         assert!(
             !client
-                .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+                .exists(
+                    &jobs.first().unwrap().identifier.queue,
+                    &jobs.first().unwrap().identifier.id
+                )
                 .await?
         );
 
@@ -646,8 +706,10 @@ mod tests {
     async fn test_complete_v2() -> anyhow::Result<()> {
         let (_srv, client) = init_server().await?;
         let job: New<(), i32> = New {
-            id: Uuid::new_v4().to_string(),
-            queue: Uuid::new_v4().to_string(),
+            identifier: Identifier {
+                id: Uuid::new_v4().to_string(),
+                queue: Uuid::new_v4().to_string(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: None,
             payload: (),
@@ -659,38 +721,47 @@ mod tests {
         client.enqueue(EnqueueMode::Unique, &jobs).await?;
 
         let polled_jobs = client
-            .poll::<(), i32>(&jobs.first().unwrap().queue, 10)
+            .poll::<(), i32>(&jobs.first().unwrap().identifier.queue, 10)
             .await?;
         assert_eq!(polled_jobs.len(), 1);
         assert!(
             client
-                .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+                .exists(
+                    &jobs.first().unwrap().identifier.queue,
+                    &jobs.first().unwrap().identifier.id
+                )
                 .await?
         );
 
         client
             .complete(
-                &polled_jobs[0].queue,
-                &polled_jobs[0].id,
+                &polled_jobs[0].identifier.queue,
+                &polled_jobs[0].identifier.id,
                 &polled_jobs[0].run_id.unwrap(),
             )
             .await?;
         assert!(
             !client
-                .exists(&jobs.first().unwrap().queue, &jobs.first().unwrap().id)
+                .exists(
+                    &jobs.first().unwrap().identifier.queue,
+                    &jobs.first().unwrap().identifier.id
+                )
                 .await?
         );
         // calling again should not return error
         client
             .complete(
-                &polled_jobs[0].queue,
-                &polled_jobs[0].id,
+                &polled_jobs[0].identifier.queue,
+                &polled_jobs[0].identifier.id,
                 &polled_jobs[0].run_id.unwrap(),
             )
             .await?;
         // same for delete
         client
-            .delete(&polled_jobs[0].queue, &polled_jobs[0].id)
+            .delete(
+                &polled_jobs[0].identifier.queue,
+                &polled_jobs[0].identifier.id,
+            )
             .await?;
 
         Ok(())
@@ -704,8 +775,10 @@ mod tests {
             .unwrap();
         let queue = Uuid::new_v4().to_string();
         let j: New<i32, i32> = New {
-            id: Uuid::new_v4().to_string(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: Uuid::new_v4().to_string(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: None,
             payload: 3,
@@ -713,8 +786,10 @@ mod tests {
             run_at: Some(now),
         };
         let j2: New<i32, i32> = New {
-            id: Uuid::new_v4().to_string(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: Uuid::new_v4().to_string(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: None,
             payload: 4,
@@ -744,11 +819,11 @@ mod tests {
 
         let jh1 = helpers.first().unwrap();
         let jh2 = helpers.last().unwrap();
-        assert_eq!(jh1.job().queue, queue);
-        assert_eq!(jh1.job().id, jobs.first().unwrap().id);
+        assert_eq!(jh1.job().identifier.queue, queue);
+        assert_eq!(jh1.job().identifier.id, jobs.first().unwrap().identifier.id);
         assert_eq!(jh1.job().payload, jobs.first().unwrap().payload);
-        assert_eq!(jh2.job().queue, queue);
-        assert_eq!(jh2.job().id, jobs.last().unwrap().id);
+        assert_eq!(jh2.job().identifier.queue, queue);
+        assert_eq!(jh2.job().identifier.id, jobs.last().unwrap().identifier.id);
         assert_eq!(jh2.job().payload, jobs.last().unwrap().payload);
 
         jh2.complete().await?;
@@ -757,7 +832,7 @@ mod tests {
 
         let maybe_ej: Option<Existing<i32, i32>> = jh1
             .inner_client()
-            .get(&jh1.job().queue, &jh1.job().id)
+            .get(&jh1.job().identifier.queue, &jh1.job().identifier.id)
             .await?;
         assert!(maybe_ej.is_some());
 
@@ -772,7 +847,7 @@ mod tests {
 
         let maybe_ej: Option<Existing<i32, i32>> = jh1
             .inner_client()
-            .get(&jh1.job().queue, &jh1.job().id)
+            .get(&jh1.job().identifier.queue, &jh1.job().identifier.id)
             .await?;
         assert!(maybe_ej.is_some());
 

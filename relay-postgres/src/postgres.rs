@@ -1,10 +1,5 @@
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::io;
-use std::io::ErrorKind;
-use std::sync::Arc;
-use std::{str::FromStr, time::Duration};
-
+use crate::errors::{Error, Result};
+use crate::migrations::{run_migrations, Migration};
 use chrono::{TimeZone, Utc};
 use deadpool_postgres::{
     ClientWrapper, GenericClient, Hook, HookError, Manager, ManagerConfig, Pool, PoolError,
@@ -12,24 +7,29 @@ use deadpool_postgres::{
 };
 use metrics::{counter, histogram};
 use pg_interval::Interval;
+use relay_core::job::{
+    EnqueueMode, Existing as RelayExisting, Identifier, New as RelayNew, WorkflowInfo,
+    WorkflowResult,
+};
+use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, TrustAnchor, UnixTime};
 use rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
 use serde_json::value::RawValue;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::io;
+use std::io::ErrorKind;
+use std::sync::Arc;
+use std::{str::FromStr, time::Duration};
 use tokio_postgres::error::SqlState;
 use tokio_postgres::types::{Json, ToSql};
 use tokio_postgres::{Config as PostgresConfig, Row, Statement};
 use tokio_stream::{Stream, StreamExt};
 use tracing::{debug, warn};
 use uuid::Uuid;
-
-use relay_core::job::{EnqueueMode, Existing as RelayExisting, New as RelayNew};
-use relay_core::num::{GtZeroI64, PositiveI16, PositiveI32};
-
-use crate::errors::{Error, Result};
-use crate::migrations::{run_migrations, Migration};
 
 type Existing = RelayExisting<Box<RawValue>, Box<RawValue>>;
 type New = RelayNew<Box<RawValue>, Box<RawValue>>;
@@ -165,7 +165,7 @@ impl PgStore {
     ) -> Result<HashMap<&'a String, u64>> {
         let mut counts: HashMap<&String, u64> = HashMap::new();
 
-        let stmt = enqueue_stmt(mode, transaction).await?;
+        let stmt = enqueue_job_stmt(mode, transaction).await?;
 
         for job in jobs {
             let now = Utc::now().naive_utc();
@@ -179,8 +179,8 @@ impl PgStore {
                 .execute(
                     &stmt,
                     &[
-                        &job.id,
-                        &job.queue,
+                        &job.identifier.id,
+                        &job.identifier.queue,
                         &Interval::from_duration(
                             chrono::TimeDelta::try_seconds(i64::from(job.timeout.get()))
                                 .unwrap_or_else(|| chrono::TimeDelta::try_seconds(0).unwrap()),
@@ -196,15 +196,15 @@ impl PgStore {
                 .map_err(|e| {
                     if let Some(&SqlState::UNIQUE_VIOLATION) = e.code() {
                         Error::JobExists {
-                            job_id: job.id.to_string(),
-                            queue: job.queue.to_string(),
+                            job_id: job.identifier.id.to_string(),
+                            queue: job.identifier.queue.to_string(),
                         }
                     } else {
                         e.into()
                     }
                 })?;
 
-            match counts.entry(&job.queue) {
+            match counts.entry(&job.identifier.queue) {
                 Entry::Occupied(mut o) => *o.get_mut() += 1,
                 Entry::Vacant(v) => {
                     v.insert(1);
@@ -255,7 +255,13 @@ impl PgStore {
                       run_id,
                       run_at,
                       updated_at,
-                      created_at
+                      created_at,
+                      parent_id,
+                      parent_queue,
+                      children_remaining,
+                      ultimate_parent_id,
+                      ultimate_parent_queue,
+                      workflow_results
                FROM jobs
                WHERE
                     queue=$1 AND
@@ -350,6 +356,12 @@ impl PgStore {
                          j.run_at,
                          j.updated_at,
                          j.created_at,
+                         j.parent_id,
+                         j.parent_queue,
+                         j.children_remaining,
+                         j.ultimate_parent_id,
+                         j.ultimate_parent_queue,
+                         j.workflow_results,
                          subquery.updated_at as subquery_updated_at
             ",
             )
@@ -374,7 +386,7 @@ impl PgStore {
             let row = row?;
             let j = row_to_job(&row);
 
-            let updated_at = Utc.from_utc_datetime(&row.get(11));
+            let updated_at = Utc.from_utc_datetime(&row.get(17));
             let to_processed = if updated_at > j.run_at {
                 updated_at
             } else {
@@ -387,7 +399,7 @@ impl PgStore {
             // This is a possible indicator not enough consumers/processors on the calling side
             // and jobs are backed up for processing.
             if let Ok(d) = (now - to_processed).to_std() {
-                histogram!("latency", "queue" => j.queue.clone(), "type" => "to_processing")
+                histogram!("latency", "queue" => j.identifier.queue.clone(), "type" => "to_processing")
                     .record(d);
             }
 
@@ -710,6 +722,8 @@ impl PgStore {
                 .increment(u64::try_from(count).unwrap_or_default());
         }
 
+        // TODO: Adjust this query to only apply to jobs without a workflow ultimate parent id and
+        //       add another delete in order to delete all associated jobs with a workflow.
         let stmt = client
             .prepare_cached(
                 "
@@ -748,7 +762,10 @@ impl PgStore {
 }
 
 #[inline]
-async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> Result<Statement> {
+async fn enqueue_job_stmt<'a>(
+    mode: EnqueueMode,
+    transaction: &Transaction<'a>,
+) -> Result<Statement> {
     let stmt = match mode {
         EnqueueMode::Unique => {
             transaction
@@ -823,9 +840,53 @@ async fn enqueue_stmt<'a>(mode: EnqueueMode, transaction: &Transaction<'a>) -> R
 }
 
 fn row_to_job(row: &Row) -> Existing {
+    let workflow = match row.get::<usize, Option<String>>(14) {
+        Some(workflow_id) => {
+            if let Some(workflow_queue) = row.get::<usize, Option<String>>(15) {
+                Some(WorkflowInfo {
+                    parent: match row.get::<usize, Option<String>>(11) {
+                        Some(id) => {
+                            if let Some(queue) = row.get::<usize, Option<String>>(12) {
+                                Some(Identifier { queue, id })
+                            } else {
+                                warn!("invalid parent value, defaulting to None");
+                                None
+                            }
+                        }
+                        None => None,
+                    },
+                    ultimate_parent: Identifier {
+                        queue: workflow_queue,
+                        id: workflow_id,
+                    },
+                    children_remaining: if let Some(children_remaining) =
+                        row.get::<usize, Option<i16>>(13)
+                    {
+                        PositiveI16::new(children_remaining).unwrap_or_else(|| {
+                            warn!("invalid children_remaining value, defaulting to 0");
+                            unsafe { PositiveI16::new_unchecked(0) }
+                        })
+                    } else {
+                        warn!("invalid children_remaining value, defaulting to 0");
+                        unsafe { PositiveI16::new_unchecked(0) }
+                    },
+                    results: row
+                        .get::<usize, Option<Json<Vec<WorkflowResult>>>>(16)
+                        .map(|results| results.0)
+                        .unwrap_or_default(),
+                })
+            } else {
+                warn!("invalid top level workflow value, defaulting to None");
+                None
+            }
+        }
+        None => None,
+    };
     Existing {
-        id: row.get(0),
-        queue: row.get(1),
+        identifier: Identifier {
+            id: row.get(0),
+            queue: row.get(1),
+        },
         timeout: PositiveI32::new(interval_seconds(row.get::<usize, Interval>(2))).unwrap_or_else(
             || {
                 warn!("invalid timeout value, defaulting to 30s");
@@ -854,6 +915,7 @@ fn row_to_job(row: &Row) -> Existing {
         run_at: Utc.from_utc_datetime(&row.get(8)),
         updated_at: Utc.from_utc_datetime(&row.get(9)),
         created_at: Utc.from_utc_datetime(&row.get(10)),
+        workflow,
     }
 }
 
@@ -1054,8 +1116,10 @@ mod tests {
         let payload1 = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
         let job1 = New {
-            id: job_id1.clone(),
-            queue: queue1.clone(),
+            identifier: Identifier {
+                id: job_id1.clone(),
+                queue: queue1.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
@@ -1063,8 +1127,10 @@ mod tests {
             run_at: None,
         };
         let job2 = New {
-            id: job_id2.clone(),
-            queue: queue2.clone(),
+            identifier: Identifier {
+                id: job_id2.clone(),
+                queue: queue2.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload2.clone(),
@@ -1072,8 +1138,10 @@ mod tests {
             run_at: None,
         };
         let reschedule = New {
-            id: job_id1.clone(),
-            queue: queue1.clone(),
+            identifier: Identifier {
+                id: job_id1.clone(),
+                queue: queue1.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
@@ -1095,8 +1163,8 @@ mod tests {
         let result = store
             .requeue(
                 EnqueueMode::Unique,
-                &next.queue,
-                &next.id,
+                &next.identifier.queue,
+                &next.identifier.id,
                 &next.run_id.unwrap(),
                 vec![&reschedule].into_iter(),
             )
@@ -1108,7 +1176,11 @@ mod tests {
                 job_id: job_id1.clone(),
             }
         );
-        assert!(store.exists(&reschedule.queue, &reschedule.id).await?);
+        assert!(
+            store
+                .exists(&reschedule.identifier.queue, &reschedule.identifier.id)
+                .await?
+        );
 
         // test job was deleted even though existing job existed
         store
@@ -1126,8 +1198,11 @@ mod tests {
         let rescheduled_job = store.get(&queue1, &job_id1).await?;
         assert!(rescheduled_job.is_some());
         let rescheduled_job = rescheduled_job.unwrap();
-        assert_eq!(reschedule.id, rescheduled_job.id);
-        assert_eq!(reschedule.queue, rescheduled_job.queue);
+        assert_eq!(reschedule.identifier.id, rescheduled_job.identifier.id);
+        assert_eq!(
+            reschedule.identifier.queue,
+            rescheduled_job.identifier.queue
+        );
         assert_eq!(reschedule.timeout, rescheduled_job.timeout);
         assert_eq!(reschedule.max_retries, rescheduled_job.max_retries);
         assert_eq!(
@@ -1150,8 +1225,10 @@ mod tests {
         let payload1 = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
         let job1 = New {
-            id: job_id1.clone(),
-            queue: queue1.clone(),
+            identifier: Identifier {
+                id: job_id1.clone(),
+                queue: queue1.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
@@ -1159,8 +1236,10 @@ mod tests {
             run_at: None,
         };
         let job2 = New {
-            id: job_id2.clone(),
-            queue: queue2.clone(),
+            identifier: Identifier {
+                id: job_id2.clone(),
+                queue: queue2.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload2.clone(),
@@ -1168,8 +1247,10 @@ mod tests {
             run_at: None,
         };
         let reschedule = New {
-            id: job_id1.clone(),
-            queue: queue1.clone(),
+            identifier: Identifier {
+                id: job_id1.clone(),
+                queue: queue1.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
@@ -1191,8 +1272,8 @@ mod tests {
         let result = store
             .requeue(
                 EnqueueMode::Unique,
-                &next.queue,
-                &next.id,
+                &next.identifier.queue,
+                &next.identifier.id,
                 &next.run_id.unwrap(),
                 vec![&reschedule].into_iter(),
             )
@@ -1204,7 +1285,11 @@ mod tests {
                 job_id: job_id1.clone(),
             }
         );
-        assert!(store.exists(&reschedule.queue, &reschedule.id).await?);
+        assert!(
+            store
+                .exists(&reschedule.identifier.queue, &reschedule.identifier.id)
+                .await?
+        );
 
         // test job was deleted even though existing job existed
         store
@@ -1232,8 +1317,10 @@ mod tests {
         let payload1 = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
         let job1 = New {
-            id: job_id1.clone(),
-            queue: queue1.clone(),
+            identifier: Identifier {
+                id: job_id1.clone(),
+                queue: queue1.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
@@ -1241,8 +1328,10 @@ mod tests {
             run_at: None,
         };
         let job2 = New {
-            id: job_id2.clone(),
-            queue: queue2.clone(),
+            identifier: Identifier {
+                id: job_id2.clone(),
+                queue: queue2.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload2.clone(),
@@ -1250,8 +1339,10 @@ mod tests {
             run_at: None,
         };
         let reschedule = New {
-            id: job_id1.clone(),
-            queue: queue1.clone(),
+            identifier: Identifier {
+                id: job_id1.clone(),
+                queue: queue1.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload1.clone(),
@@ -1297,8 +1388,10 @@ mod tests {
         let payload = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
         let job = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
@@ -1316,8 +1409,10 @@ mod tests {
 
         let now = Utc::now().duration_trunc(TimeDelta::try_milliseconds(100).unwrap())?;
         let mut reschedule = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(31).unwrap(),
             max_retries: Some(PositiveI16::new(4).unwrap()),
             payload: payload2.clone(),
@@ -1327,18 +1422,20 @@ mod tests {
         store
             .requeue(
                 EnqueueMode::Unique,
-                &reschedule.queue,
-                &reschedule.id,
+                &reschedule.identifier.queue,
+                &reschedule.identifier.id,
                 &next.run_id.unwrap(),
                 vec![&reschedule].into_iter(),
             )
             .await?;
 
-        let result = store.get(&reschedule.queue, &reschedule.id).await?;
+        let result = store
+            .get(&reschedule.identifier.queue, &reschedule.identifier.id)
+            .await?;
         assert!(result.is_some());
         let result = result.unwrap();
-        assert_eq!(reschedule.id, result.id);
-        assert_eq!(reschedule.queue, result.queue);
+        assert_eq!(reschedule.identifier.id, result.identifier.id);
+        assert_eq!(reschedule.identifier.queue, result.identifier.queue);
         assert_eq!(PositiveI32::new(31).unwrap(), result.timeout);
         assert_eq!(Some(PositiveI16::new(4).unwrap()), result.max_retries);
         assert_eq!(Some(PositiveI16::new(4).unwrap()), result.retries_remaining);
@@ -1352,13 +1449,15 @@ mod tests {
         store
             .requeue(
                 EnqueueMode::Unique,
-                &reschedule.queue,
-                &reschedule.id,
+                &reschedule.identifier.queue,
+                &reschedule.identifier.id,
                 &next.run_id.unwrap(),
                 vec![&reschedule].into_iter(),
             )
             .await?;
-        let result = store.get(&reschedule.queue, &reschedule.id).await?;
+        let result = store
+            .get(&reschedule.identifier.queue, &reschedule.identifier.id)
+            .await?;
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(payload2.to_string(), result.payload.to_string());
@@ -1370,8 +1469,8 @@ mod tests {
         store
             .requeue(
                 EnqueueMode::Unique,
-                &reschedule.queue,
-                &reschedule.id.clone(),
+                &reschedule.identifier.queue,
+                &reschedule.identifier.id.clone(),
                 &next.run_id.unwrap(),
                 vec![&reschedule].into_iter(),
             )
@@ -1388,8 +1487,10 @@ mod tests {
         let payload = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
         let job1 = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
@@ -1397,8 +1498,10 @@ mod tests {
             run_at: None,
         };
         let job2 = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(31).unwrap(),
             max_retries: Some(PositiveI16::new(4).unwrap()),
             payload: payload2.clone(),
@@ -1418,8 +1521,8 @@ mod tests {
         let j = store.get(&queue, &job_id).await?;
         assert!(j.is_some());
         let j = j.unwrap();
-        assert_eq!(job_id, j.id);
-        assert_eq!(queue, j.queue);
+        assert_eq!(job_id, j.identifier.id);
+        assert_eq!(queue, j.identifier.queue);
         assert_eq!(PositiveI32::new(30).unwrap(), j.timeout);
         assert_eq!(Some(PositiveI16::new(3).unwrap()), j.max_retries);
         assert_eq!(Some(PositiveI16::new(3).unwrap()), j.retries_remaining);
@@ -1438,8 +1541,10 @@ mod tests {
         let payload = RawValue::from_string("{}".to_string())?;
         let payload2 = RawValue::from_string(r#"{"key": "value"}"#.to_string())?;
         let job1 = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
@@ -1447,8 +1552,10 @@ mod tests {
             run_at: None,
         };
         let job2 = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(31).unwrap(),
             max_retries: Some(PositiveI16::new(4).unwrap()),
             payload: payload2.clone(),
@@ -1468,8 +1575,8 @@ mod tests {
         let j = store.get(&queue, &job_id).await?;
         assert!(j.is_some());
         let j = j.unwrap();
-        assert_eq!(job_id, j.id);
-        assert_eq!(queue, j.queue);
+        assert_eq!(job_id, j.identifier.id);
+        assert_eq!(queue, j.identifier.queue);
         assert_eq!(PositiveI32::new(31).unwrap(), j.timeout);
         assert_eq!(Some(PositiveI16::new(4).unwrap()), j.max_retries);
         assert_eq!(Some(PositiveI16::new(4).unwrap()), j.retries_remaining);
@@ -1488,8 +1595,10 @@ mod tests {
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
         let job1 = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
@@ -1497,8 +1606,10 @@ mod tests {
             run_at: None,
         };
         let job2 = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(31).unwrap(),
             max_retries: Some(PositiveI16::new(4).unwrap()),
             payload: payload.clone(),
@@ -1527,8 +1638,10 @@ mod tests {
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
         let job1 = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
@@ -1536,8 +1649,10 @@ mod tests {
             run_at: None,
         };
         let job2 = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
@@ -1550,8 +1665,8 @@ mod tests {
         let result = store.get(&queue, &job_id).await?;
         assert!(result.is_some());
         let result = result.unwrap();
-        assert_eq!(job_id, result.id);
-        assert_eq!(queue, result.queue);
+        assert_eq!(job_id, result.identifier.id);
+        assert_eq!(queue, result.identifier.queue);
         assert_eq!(PositiveI32::new(30).unwrap(), result.timeout);
         assert_eq!(Some(PositiveI16::new(3).unwrap()), result.max_retries);
         assert_eq!(Some(PositiveI16::new(3).unwrap()), result.retries_remaining);
@@ -1572,8 +1687,8 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(1, result.as_ref().unwrap().len());
         let result = &result.as_ref().unwrap()[0];
-        assert_eq!(job_id, result.id);
-        assert_eq!(queue, result.queue);
+        assert_eq!(job_id, result.identifier.id);
+        assert_eq!(queue, result.identifier.queue);
         assert_eq!(PositiveI32::new(30).unwrap(), result.timeout);
         assert_eq!(Some(PositiveI16::new(3).unwrap()), result.max_retries);
         assert_eq!(Some(PositiveI16::new(3).unwrap()), result.retries_remaining);
@@ -1582,7 +1697,11 @@ mod tests {
         assert!(result.run_id.is_some());
 
         let result = store
-            .complete(&result.queue, &result.id, &result.run_id.unwrap())
+            .complete(
+                &result.identifier.queue,
+                &result.identifier.id,
+                &result.run_id.unwrap(),
+            )
             .await;
         assert!(result.is_ok());
         assert!(!store.exists(&queue, &job_id).await?);
@@ -1596,8 +1715,10 @@ mod tests {
         let job_id = Uuid::new_v4().to_string();
         let queue = Uuid::new_v4().to_string();
         let job = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: RawValue::from_string("{}".to_string())?,
@@ -1612,11 +1733,19 @@ mod tests {
         let jobs = next.unwrap();
         let next = jobs.first().unwrap();
 
-        let result = store.delete(&next.queue, &next.id).await;
+        let result = store
+            .delete(&next.identifier.queue, &next.identifier.id)
+            .await;
         assert!(result.is_ok());
-        assert!(!store.exists(&next.queue, &next.id).await?);
+        assert!(
+            !store
+                .exists(&next.identifier.queue, &next.identifier.id)
+                .await?
+        );
 
-        let result = store.delete(&next.queue, &next.id).await;
+        let result = store
+            .delete(&next.identifier.queue, &next.identifier.id)
+            .await;
         assert!(result.is_ok());
         Ok(())
     }
@@ -1629,8 +1758,10 @@ mod tests {
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
         let job = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
@@ -1650,14 +1781,22 @@ mod tests {
         let next = jobs.first().unwrap();
 
         let result = store
-            .complete(&queue, &next.id, &next.run_id.unwrap())
+            .complete(&queue, &next.identifier.id, &next.run_id.unwrap())
             .await;
         assert!(result.is_ok());
-        assert!(!store.exists(&next.queue, &next.id).await?);
+        assert!(
+            !store
+                .exists(&next.identifier.queue, &next.identifier.id)
+                .await?
+        );
 
         // doesn't exist anymore, should return ok still
         let result = store
-            .complete(&next.queue, &next.id, &next.run_id.unwrap())
+            .complete(
+                &next.identifier.queue,
+                &next.identifier.id,
+                &next.run_id.unwrap(),
+            )
             .await;
         assert!(result.is_ok());
         Ok(())
@@ -1671,8 +1810,10 @@ mod tests {
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
         let job = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(30).unwrap(),
             max_retries: Some(PositiveI16::new(3).unwrap()),
             payload: payload.clone(),
@@ -1693,7 +1834,12 @@ mod tests {
 
         let state = &RawValue::from_string(r#"{"my": "state"}"#.to_string())?;
         let _ = store
-            .heartbeat(&queue, &next.id, &next.run_id.unwrap(), Some(state))
+            .heartbeat(
+                &queue,
+                &next.identifier.id,
+                &next.run_id.unwrap(),
+                Some(state),
+            )
             .await;
         let heartbeated_job = store.get(&queue, &job_id).await?;
         assert!(heartbeated_job.is_some());
@@ -1706,13 +1852,19 @@ mod tests {
         );
 
         let result = store
-            .complete(&queue, &next.id, &next.run_id.unwrap())
+            .complete(&queue, &next.identifier.id, &next.run_id.unwrap())
             .await;
         assert!(result.is_ok());
-        assert!(!store.exists(&next.queue, &next.id).await?);
+        assert!(
+            !store
+                .exists(&next.identifier.queue, &next.identifier.id)
+                .await?
+        );
 
         let run_id = &next.run_id.unwrap();
-        let result = store.heartbeat(&queue, &next.id, run_id, None).await;
+        let result = store
+            .heartbeat(&queue, &next.identifier.id, run_id, None)
+            .await;
         assert_eq!(
             result.unwrap_err(),
             Error::JobNotFound {
@@ -1733,8 +1885,10 @@ mod tests {
         let queue = Uuid::new_v4().to_string();
         let payload = RawValue::from_string("{}".to_string())?;
         let job_no_retries_immediate_timeout = New {
-            id: job_id.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(0).unwrap(),
             max_retries: Some(PositiveI16::new(0).unwrap()),
             payload: payload.clone(),
@@ -1743,8 +1897,10 @@ mod tests {
         };
         let job_id2 = Uuid::new_v4().to_string();
         let job_retries_remaining_minus_one = New {
-            id: job_id2.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id2.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(0).unwrap(),
             max_retries: Some(PositiveI16::new(1).unwrap()),
             payload: payload.clone(),
@@ -1753,8 +1909,10 @@ mod tests {
         };
         let job_id3 = Uuid::new_v4().to_string();
         let job_retries_forever = New {
-            id: job_id3.clone(),
-            queue: queue.clone(),
+            identifier: Identifier {
+                id: job_id3.clone(),
+                queue: queue.clone(),
+            },
             timeout: PositiveI32::new(0).unwrap(),
             max_retries: None,
             payload: payload.clone(),
@@ -1788,7 +1946,7 @@ mod tests {
         let job_one_more_remaining = store.get(&queue, &job_id2).await?;
         assert!(job_one_more_remaining.is_some());
         let job_one_more_remaining = job_one_more_remaining.unwrap();
-        assert_eq!(job_id2, job_one_more_remaining.id);
+        assert_eq!(job_id2, job_one_more_remaining.identifier.id);
         assert_eq!(
             PositiveI16::new(0),
             job_one_more_remaining.retries_remaining
@@ -1798,7 +1956,7 @@ mod tests {
         let job_forever_run_id = store.get(&queue, &job_id3).await?;
         assert!(job_forever_run_id.is_some());
         let job_forever_run_id = job_forever_run_id.unwrap();
-        assert_eq!(job_id3, job_forever_run_id.id);
+        assert_eq!(job_id3, job_forever_run_id.identifier.id);
         assert_eq!(None, job_forever_run_id.retries_remaining);
         assert_eq!(None, job_forever_run_id.run_id);
 
